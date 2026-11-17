@@ -1,12 +1,10 @@
 """The real-browser implementation of agent.browser_instamart.InstamartPage, using Playwright.
 
-EVERY SELECTOR BELOW IS AN UNVERIFIED PLACEHOLDER. I have no way to see Instamart's actual page
-markup from here. Before this will do anything useful:
-  1. Open https://www.swiggy.com/instamart in a real browser, log in, open DevTools.
-  2. For each selector in `Selectors` below, find the real one (right-click an element -> Inspect)
-     and replace it. Nothing else in this file should need to change.
-  3. Expect this to break again whenever Instamart redeploys their frontend -- there is no changelog
-     for a UI, unlike the MCP tool schemas in agent/real_instamart.py.
+Selectors below are real -- taken from DevTools against the live site (most are data-testid
+attributes, which survive CSS/class hashing changes). A few are still unverified placeholders,
+called out in the Selectors docstring; CHECKOUT_BUTTON is deliberately left unset (see
+agent/browser_instamart.py -- checkout() never clicks it, by design, so nothing failed by not
+having it).
 
 Not imported by agent/browser_instamart.py, run_dev.py, or any test: this is a manual tool, not a
 production path. Run it yourself, once Playwright is installed (`pip install playwright && playwright
@@ -27,28 +25,61 @@ install chromium`), via a small script like:
 from dataclasses import dataclass
 
 
+class VariantModalRequiresSelectors(Exception):
+    """Raised when add_item() finds a pack-size variant-picker modal open after clicking the add
+    button, but we don't have real selectors for the per-variant "ADD" buttons or the modal's
+    "Confirm" button yet. Deliberately refuses to guess-click inside an unknown modal -- fill in
+    Selectors.variant_modal_* once you've inspected the real modal markup, then this stops firing."""
+
+
 @dataclass
 class Selectors:
-    """CSS selectors for every element this adapter touches. All placeholders -- fill these in
-    against the real site. Keeping them in one dataclass, instead of scattered through the page
-    methods below, is the whole point: this is the only place that should need hand-editing.
+    """CSS selectors for every element this adapter touches, in one place so that's the only spot
+    that needs hand-editing when Instamart's markup changes.
+
+    Verified against the live site (confirmed in DevTools):
+      search_button, search_input, account_button, cart_button, search_result_card,
+      card_add_button, cart_line_qty_plus, cart_line_qty_minus, cart_url
+
+    Still unverified placeholders -- fill these in against the real page/cart markup:
+      card_name, card_size, card_price, card_out_of_stock, cart_line_item, cart_line_qty,
+      cart_subtotal, cart_delivery_fee, payment_cod_option, payment_upi_option,
+      orders_page_url, order_row, order_id_in_row, variant_modal, variant_modal_add_button,
+      variant_modal_confirm_button
+
+    checkout_button is deliberately left unset (TODO) -- the store was closed when last checked,
+    so it never rendered. agent/browser_instamart.py never clicks it (checkout() always pauses
+    before placing an order), so leaving this None breaks nothing; fill it in whenever convenient.
     """
     base_url: str = "https://www.swiggy.com/instamart"
-    search_box: str = "input[data-testid='search-box']"
-    search_result_card: str = "[data-testid='product-card']"
+    search_button: str = '[data-testid="search-container"]'
+    search_input: str = 'form[data-testid="search-page-header-search-bar"] input[type="search"]'
+    account_button: str = '[data-testid="user-account-button"]'
+    cart_button: str = '[data-testid="review-cart-button"]'
+    cart_url: str = "https://www.instamart.in/cart"
+
+    search_result_card: str = 'a[href^="/p/"]'
     card_name: str = "[data-testid='product-name']"
     card_size: str = "[data-testid='product-size']"
     card_price: str = "[data-testid='product-price']"
     card_out_of_stock: str = "[data-testid='product-sold-out']"
-    card_add_button: str = "[data-testid='product-add']"
+    card_add_button: str = '[data-testid="buttonpair-add"]'
 
-    cart_icon: str = "[data-testid='cart-icon']"
+    # Pack-size variant picker: appears instead of adding immediately, for some products. We only
+    # know the modal exists, not its real selectors yet -- see VariantModalRequiresSelectors.
+    variant_modal: str = "[role='dialog']"
+    variant_modal_add_button: str = None
+    variant_modal_confirm_button: str = None
+
     cart_line_item: str = "[data-testid='cart-item']"
-    cart_line_qty_plus: str = "[data-testid='cart-item-qty-plus']"
-    cart_line_qty_minus: str = "[data-testid='cart-item-qty-minus']"
+    cart_line_qty: str = "[data-testid='cart-item-qty']"
+    cart_line_qty_plus: str = '[data-testid="add_buttons_plus"]'
+    cart_line_qty_minus: str = '[data-testid="add_buttons_minus"]'
     cart_line_remove: str = "[data-testid='cart-item-remove']"
     cart_subtotal: str = "[data-testid='cart-subtotal']"
     cart_delivery_fee: str = "[data-testid='cart-delivery-fee']"
+
+    checkout_button: str = None  # TODO: unset -- store was closed when last inspected.
 
     payment_cod_option: str = "[data-testid='payment-cod']"
     payment_upi_option: str = "[data-testid='payment-upi']"
@@ -70,13 +101,17 @@ class PlaywrightInstamartPage:
 
     def search(self, query: str) -> list[dict]:
         self.page.goto(self.sel.base_url)
-        self.page.fill(self.sel.search_box, query)
+        # Clicking the search button navigates to a dedicated search page (/search?custom_back=true)
+        # where the text input then appears -- it's not a direct field on the home page.
+        self.page.click(self.sel.search_button)
+        self.page.wait_for_selector(self.sel.search_input, timeout=self.nav_timeout_ms)
+        self.page.fill(self.sel.search_input, query)
         self.page.keyboard.press("Enter")
         self.page.wait_for_selector(self.sel.search_result_card, timeout=self.nav_timeout_ms)
         cards = self.page.query_selector_all(self.sel.search_result_card)
         out = []
         for card in cards:
-            pid = card.get_attribute("data-product-id") or self._fallback_id(card)
+            pid = card.get_attribute("href") or self._fallback_id(card)
             name_el = card.query_selector(self.sel.card_name)
             size_el = card.query_selector(self.sel.card_size)
             price_el = card.query_selector(self.sel.card_price)
@@ -88,22 +123,20 @@ class PlaywrightInstamartPage:
         return out
 
     def _fallback_id(self, card) -> str:
-        """If Instamart doesn't expose a stable product id attribute, fall back to a composite of
-        whatever text is visible. Less reliable across page reloads -- a real id attribute, if one
-        exists in the real markup, should be preferred. Verify this against the live site."""
+        """If a card has no href/data-product-id, fall back to a composite of whatever text is
+        visible. Less reliable across page reloads -- prefer a real id attribute where one exists."""
         name_el = card.query_selector(self.sel.card_name)
         size_el = card.query_selector(self.sel.card_size)
         return f"{(name_el.text_content() if name_el else '').strip()}::{(size_el.text_content() if size_el else '').strip()}"
 
     def cart_items(self) -> list[dict]:
-        self.page.goto(self.sel.base_url)
-        self.page.click(self.sel.cart_icon)
+        self.page.goto(self.sel.cart_url)
         self.page.wait_for_load_state("networkidle", timeout=self.nav_timeout_ms)
         rows = self.page.query_selector_all(self.sel.cart_line_item)
         out = []
         for row in rows:
             pid = row.get_attribute("data-product-id") or self._fallback_id(row)
-            qty_el = row.query_selector("[data-testid='cart-item-qty']")
+            qty_el = row.query_selector(self.sel.cart_line_qty)
             qty = int((qty_el.text_content() if qty_el else "1").strip() or "1")
             out.append({"id": pid, "qty": qty})
         return out
@@ -117,12 +150,31 @@ class PlaywrightInstamartPage:
     def add_item(self, product_id: str, qty: int) -> None:
         card = self._find_card(product_id)
         card.query_selector(self.sel.card_add_button).click()
+        self._handle_variant_modal_if_present()
         for _ in range(qty - 1):
             card.query_selector(self.sel.cart_line_qty_plus).click()
 
+    def _handle_variant_modal_if_present(self) -> None:
+        """Some products open a pack-size picker modal instead of adding straight to the cart. We
+        don't have real selectors for the per-variant "ADD" button or the modal's "Confirm" button
+        yet, so refuse to guess-click inside it -- that's exactly the kind of thing that can misfire
+        against a real site. Raises a clear error instead of silently doing the wrong thing."""
+        modal = self.page.query_selector(self.sel.variant_modal)
+        if modal is None:
+            return
+        if not self.sel.variant_modal_add_button or not self.sel.variant_modal_confirm_button:
+            raise VariantModalRequiresSelectors(
+                "A variant-picker modal opened after clicking add-to-cart, but "
+                "Selectors.variant_modal_add_button / variant_modal_confirm_button aren't filled "
+                "in yet. Inspect the modal in DevTools and set those two fields -- not guessing "
+                "at them here on purpose."
+            )
+        modal.query_selector(self.sel.variant_modal_add_button).click()
+        modal.query_selector(self.sel.variant_modal_confirm_button).click()
+
     def set_quantity(self, product_id: str, qty: int) -> None:
         row = self._find_row(product_id)
-        current_el = row.query_selector("[data-testid='cart-item-qty']")
+        current_el = row.query_selector(self.sel.cart_line_qty)
         current = int((current_el.text_content() if current_el else "1").strip() or "1")
         button = self.sel.cart_line_qty_plus if qty > current else self.sel.cart_line_qty_minus
         for _ in range(abs(qty - current)):
@@ -134,7 +186,7 @@ class PlaywrightInstamartPage:
 
     def _find_card(self, product_id: str):
         for card in self.page.query_selector_all(self.sel.search_result_card):
-            if (card.get_attribute("data-product-id") or self._fallback_id(card)) == product_id:
+            if (card.get_attribute("href") or self._fallback_id(card)) == product_id:
                 return card
         raise LookupError(f"product {product_id!r} not found on the current search results page")
 
