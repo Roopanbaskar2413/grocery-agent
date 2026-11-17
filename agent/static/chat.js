@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   var KEY = "grocery_chat_token";
-  var token = "", lastId = 0, messages = [], busy = false;
+  var token = "", lastId = 0, messages = [], busy = false, polling = false, seen = {};
   var $ = function (id) { return document.getElementById(id); };
 
   function load() { try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; } }
@@ -57,7 +57,8 @@
   }
 
   function poll() {
-    if (!token || document.visibilityState === "hidden") return;
+    if (!token || document.visibilityState === "hidden" || polling) return;
+    polling = true;
     api("/chat/messages?after=" + lastId).then(function (r) {
       if (r.status === 401) { forget(); showLogin("That token was not accepted."); return null; }
       $("banner").style.display = "none";
@@ -65,11 +66,16 @@
     }).then(function (data) {
       if (!data) return;
       $("who").textContent = data.name || "";
-      if (data.messages.length) {
-        data.messages.forEach(function (m) { messages.push(m); lastId = Math.max(lastId, m.id); });
-        render();
-      }
-    }).catch(function () { $("banner").style.display = "block"; });
+      var added = false;
+      data.messages.forEach(function (m) {
+        if (seen[m.id]) return;                        // two overlapping polls must never show a message twice
+        seen[m.id] = true;
+        messages.push(m);
+        lastId = Math.max(lastId, m.id);
+        added = true;
+      });
+      if (added) render();
+    }).catch(function () { $("banner").style.display = "block"; }).then(function () { polling = false; });
   }
 
   function post(path, body) {
@@ -127,7 +133,7 @@
   $("signin").addEventListener("click", function () {
     var t = $("token").value.trim();
     if (!t) return;
-    token = t; save(t); $("token").value = ""; lastId = 0; messages = [];
+    token = t; save(t); $("token").value = ""; lastId = 0; messages = []; seen = {};
     showChat(); poll(); setupPush();
   });
   document.addEventListener("visibilitychange", poll);
