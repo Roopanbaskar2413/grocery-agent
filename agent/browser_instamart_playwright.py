@@ -121,6 +121,32 @@ class PlaywrightInstamartPage:
         self.debug = debug
 
     def search(self, query: str) -> list[dict]:
+        cards = self._run_search(query)
+        if self.debug:
+            print(f"    [debug] raw cards matching search_result_card: {len(cards)}")
+        out = []
+        for card in cards:
+            name = self._card_name(card)
+            container = self._card_container(card)
+            price = self._card_price(container)
+            if self.debug:
+                print(f"    [debug] card name={name!r} price={price!r}")
+            if name is None or price is None:
+                continue  # can't trust this card without both -- skip rather than guess
+            size_el = container.query_selector(self.sel.card_size)
+            out_of_stock = container.query_selector(self.sel.card_out_of_stock) is not None
+            out.append({"id": self._card_id(name), "name": name,
+                       "size": (size_el.text_content() if size_el else "").strip(),
+                       "price": price, "in_stock": not out_of_stock})
+        return out
+
+    def _run_search(self, query: str) -> list:
+        """Navigate to a fresh search for `query` and return the raw result-card elements. Used
+        by search() directly, and by _find_card() too -- update_cart() calls cart_items() (which
+        navigates to the cart page) before add_item(), so by the time a card needs to be located
+        the browser is very likely NOT sitting on that product's search results anymore. Re-running
+        the search instead of assuming the current page already has it fixed a live crash where
+        add_item looked for a card on the cart page and found nothing."""
         self.page.goto(self.sel.base_url)
         # Clicking the search button navigates to a dedicated search page (/search?custom_back=true)
         # where the text input then appears -- it's not a direct field on the home page.
@@ -140,23 +166,7 @@ class PlaywrightInstamartPage:
             self.page.wait_for_timeout(poll_ms)
             elapsed_ms += poll_ms
             cards = self.page.query_selector_all(self.sel.search_result_card)
-        if self.debug:
-            print(f"    [debug] raw cards matching search_result_card: {len(cards)}")
-        out = []
-        for card in cards:
-            name = self._card_name(card)
-            container = self._card_container(card)
-            price = self._card_price(container)
-            if self.debug:
-                print(f"    [debug] card name={name!r} price={price!r}")
-            if name is None or price is None:
-                continue  # can't trust this card without both -- skip rather than guess
-            size_el = container.query_selector(self.sel.card_size)
-            out_of_stock = container.query_selector(self.sel.card_out_of_stock) is not None
-            out.append({"id": self._card_id(card, name), "name": name,
-                       "size": (size_el.text_content() if size_el else "").strip(),
-                       "price": price, "in_stock": not out_of_stock})
-        return out
+        return cards
 
     def _card_container(self, card):
         """search_result_card ([data-testid="item-collection-card-full"]) matches only the <a>
@@ -206,12 +216,14 @@ class PlaywrightInstamartPage:
             return live[0]
         return amounts[0]["amount"] if amounts else None
 
-    def _card_id(self, card, name: str) -> str:
-        """Prefer a real product-page link if the card has one; fall back to the name text, which
-        is less reliable (two variants could share a name) but is all we have otherwise."""
-        link = card.query_selector('a[href^="/p/"]')
-        href = link.get_attribute("href") if link else None
-        return href or name
+    def _card_id(self, name: str) -> str:
+        """Just the name -- a real product-page href would be more stable as an id, but search_result_card
+        already matches the <a> itself (not a wrapper around it), so there's no nested link to pull a
+        href from without self-referencing. More importantly, _find_card() re-searches by typing the
+        id into the search box (see _run_search), so the id needs to be real searchable text anyway --
+        an href wouldn't work there even if we could get one. Two same-named variants would collide,
+        a known gap (see README)."""
+        return name
 
     def _fallback_id(self, row) -> str:
         """Cart-row id fallback when there's no data-product-id -- composite of the row's real
@@ -339,11 +351,14 @@ class PlaywrightInstamartPage:
             row.query_selector(self.sel.cart_line_qty_minus).click()
 
     def _find_card(self, product_id: str):
-        for card in self.page.query_selector_all(self.sel.search_result_card):
+        """product_id is the product's own name (see _card_id), so re-run a fresh search for it
+        as the query -- the browser is very likely not sitting on that product's search results
+        anymore by the time this is called (see _run_search)."""
+        for card in self._run_search(product_id):
             name = self._card_name(card)
-            if name is not None and self._card_id(card, name) == product_id:
+            if name is not None and self._card_id(name) == product_id:
                 return card
-        raise LookupError(f"product {product_id!r} not found on the current search results page")
+        raise LookupError(f"product {product_id!r} not found when re-searching for it")
 
     def _find_row(self, product_id: str):
         for row in self.page.query_selector_all(self.sel.cart_line_item):
