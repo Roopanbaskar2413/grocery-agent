@@ -167,22 +167,23 @@ class PlaywrightInstamartPage:
         return alt.strip() if alt else None
 
     def _rupee_amounts(self, element) -> list[dict]:
-        """The ₹ symbol here isn't real text -- it's a CSS ::before pseudo-element's `content`,
-        confirmed in DevTools (the actual DOM text node under it is just "45"). A ₹<digits> text
-        regex can never match that. Instead, walk every descendant in-page and check each one's
-        *computed* ::before content for a literal ₹, collecting its digits and whether it's
-        struck through (a discounted line shows both the original and the real price, and which
-        one comes first differs between the cart page and the search cards -- line-through is
-        the reliable signal, not position)."""
+        """The ₹ glyph in front of a price isn't a plain ₹ (U+20B9) text character -- DevTools
+        showed it's drawn by an icon font (what prints as garbled boxes when you copy it), and
+        checking computed ::before content for it turned out unreliable too (the element DevTools
+        had selected was a stale/recycled virtualized-list node by the time it got checked).
+        So: don't look for the symbol at all. A price div's own text node is just the bare digits
+        ("45", not "₹45", confirmed in DevTools), with nothing else in it -- unlike a size/weight
+        label ("430 g"), which always has a unit attached in the same text node. Walk every leaf
+        descendant and keep the ones whose trimmed text is *purely* digits; that's specific enough
+        to rule out size/weight without needing to find the currency symbol at all."""
         return element.evaluate("""(root) => {
             const out = [];
             for (const el of root.querySelectorAll('*')) {
-                const before = window.getComputedStyle(el, '::before').content;
-                if (!before || before.replace(/["']/g, '').trim() !== '₹') continue;
-                const digits = (el.textContent || '').replace(/[^0-9]/g, '');
-                if (!digits) continue;
+                if (el.children.length > 0) continue;  // leaves only
+                const text = (el.textContent || '').trim();
+                if (!/^\\d+$/.test(text)) continue;
                 const struck = window.getComputedStyle(el).textDecorationLine.includes('line-through');
-                out.push({amount: parseInt(digits, 10), struck});
+                out.push({amount: parseInt(text, 10), struck});
             }
             return out;
         }""")
