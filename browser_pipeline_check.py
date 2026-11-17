@@ -36,7 +36,11 @@ def main(items):
 
         lines = []
         for item in items:
-            matches = [p for p in store.search_products(item) if p.in_stock]
+            found = store.search_products(item)
+            print(f"  {item}: {len(found)} card(s) found")
+            for p in found:
+                print(f"    - {p.name!r} {p.size!r} ₹{p.price} in_stock={p.in_stock} id={p.id!r}")
+            matches = [p for p in found if p.in_stock]
             if not matches:
                 print(f"  {item}: no in-stock match found")
                 continue
@@ -46,6 +50,8 @@ def main(items):
 
         if not lines:
             print("Nothing matched, nothing added to the cart.")
+            input("\nPress Enter to close the browser...")
+            context.close()
             return
 
         store.update_cart([(pid, qty) for pid, qty in lines])
