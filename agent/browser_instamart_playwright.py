@@ -214,8 +214,10 @@ class PlaywrightInstamartPage:
 
     def _card_price(self, card) -> int | None:
         """Prefer a non-struck-through amount (the real/current price); fall back to whatever's
-        there if every amount found happens to be struck through."""
-        amounts = self._rupee_amounts(card)
+        there if every amount found happens to be struck through. Excludes cart_line_qty: a
+        product already in the cart shows a quantity stepper on its search card too, and that
+        counter is just as much a pure-digit leaf as the cart-row one that caused the same bug."""
+        amounts = self._rupee_amounts(card, self.sel.cart_line_qty)
         live = [a["amount"] for a in amounts if not a["struck"]]
         if live:
             return live[0]
