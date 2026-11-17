@@ -311,8 +311,11 @@ class PlaywrightInstamartPage:
         # canceled this add's network request before it reached the server.
         try:
             card.wait_for_selector(self.sel.card_qty_count, timeout=self.nav_timeout_ms)
-        except Exception:
-            pass
+            if self.debug:
+                print(f"    [debug] add_item({product_id!r}): stepper confirmed")
+        except Exception as e:
+            if self.debug:
+                print(f"    [debug] add_item({product_id!r}): stepper never appeared ({e})")
         for _ in range(qty - 1):
             card.query_selector(self.sel.card_add_button).click()
 
