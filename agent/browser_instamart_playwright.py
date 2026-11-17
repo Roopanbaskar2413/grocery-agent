@@ -146,17 +146,27 @@ class PlaywrightInstamartPage:
         out = []
         for card in cards:
             name = self._card_name(card)
-            price = self._card_price(card)
+            container = self._card_container(card)
+            price = self._card_price(container)
             if self.debug:
                 print(f"    [debug] card name={name!r} price={price!r}")
             if name is None or price is None:
                 continue  # can't trust this card without both -- skip rather than guess
-            size_el = card.query_selector(self.sel.card_size)
-            out_of_stock = card.query_selector(self.sel.card_out_of_stock) is not None
+            size_el = container.query_selector(self.sel.card_size)
+            out_of_stock = container.query_selector(self.sel.card_out_of_stock) is not None
             out.append({"id": self._card_id(card, name), "name": name,
                        "size": (size_el.text_content() if size_el else "").strip(),
                        "price": price, "in_stock": not out_of_stock})
         return out
+
+    def _card_container(self, card):
+        """search_result_card ([data-testid="item-collection-card-full"]) matches only the <a>
+        wrapping the image/name -- price, discount badge, and out-of-stock badge live in a
+        SIBLING div under the same parent, not inside that <a> at all (confirmed in DevTools: both
+        are direct children of the same wrapping div). Climb to that parent to search for them."""
+        handle = card.evaluate_handle("el => el.parentElement")
+        parent = handle.as_element()
+        return parent if parent is not None else card
 
     def _card_name(self, card) -> str | None:
         """The card's name text div only has a hashed CSS class, no stable hook -- read the
@@ -271,9 +281,10 @@ class PlaywrightInstamartPage:
                 "in yet. Inspect the modal in DevTools and set those two fields -- not guessing "
                 "at them here on purpose."
             )
-        target_size_el = card.query_selector(self.sel.card_size)
+        container = self._card_container(card)
+        target_size_el = container.query_selector(self.sel.card_size)
         target_size = (target_size_el.text_content() if target_size_el else "").strip()
-        target_price = self._card_price(card)
+        target_price = self._card_price(container)
 
         row_buttons = modal.query_selector_all(self.sel.variant_modal_add_button)
         matched = None
