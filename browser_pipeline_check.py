@@ -29,7 +29,7 @@ def main(items):
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(PROFILE_DIR, headless=False)
         page = context.new_page()
-        store = BrowserInstamart(PlaywrightInstamartPage(page, Selectors()))
+        store = BrowserInstamart(PlaywrightInstamartPage(page, Selectors(), debug=True))
 
         input(f"Browser open. Log in to Instamart by hand if this is the first run, "
              f"then press Enter to continue...")

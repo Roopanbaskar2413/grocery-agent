@@ -116,10 +116,11 @@ class PlaywrightInstamartPage:
     on purpose: no `playwright` import here, so this file never needs the package installed just to
     be imported (only to actually run it with a real page object)."""
 
-    def __init__(self, page, selectors: Selectors = None, nav_timeout_ms: int = 15000):
+    def __init__(self, page, selectors: Selectors = None, nav_timeout_ms: int = 15000, debug: bool = False):
         self.page = page
         self.sel = selectors or Selectors()
         self.nav_timeout_ms = nav_timeout_ms
+        self.debug = debug
 
     def search(self, query: str) -> list[dict]:
         self.page.goto(self.sel.base_url)
@@ -141,10 +142,14 @@ class PlaywrightInstamartPage:
             self.page.wait_for_timeout(poll_ms)
             elapsed_ms += poll_ms
             cards = self.page.query_selector_all(self.sel.search_result_card)
+        if self.debug:
+            print(f"    [debug] raw cards matching search_result_card: {len(cards)}")
         out = []
         for card in cards:
             name = self._card_name(card)
             price = self._card_price(card)
+            if self.debug:
+                print(f"    [debug] card name={name!r} price={price!r}")
             if name is None or price is None:
                 continue  # can't trust this card without both -- skip rather than guess
             size_el = card.query_selector(self.sel.card_size)
