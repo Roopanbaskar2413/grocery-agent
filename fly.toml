@@ -1,0 +1,29 @@
+# fly.io deploy config. Fill in `app` after `fly launch` names it, and run
+# `fly volumes create agent_data --size 1` once before the first deploy.
+app = "CHANGE-ME"
+primary_region = "sin"   # pick the region closest to you; see `fly platform regions`
+
+[build]
+
+[env]
+  AGENT_DB = "/data/agent.db"
+  SWIGGY_TOKEN_PATH = "/data/.swiggy_token"
+
+[mounts]
+  source = "agent_data"
+  destination = "/data"
+
+# min_machines_running = 1: this app runs its own in-process scheduler (reminders, cart expiry,
+# watched-item checks, the WhatsApp dispatcher). If the machine scales to zero between requests,
+# that loop stops too and timers silently stop firing until the next inbound request wakes it.
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

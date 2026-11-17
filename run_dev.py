@@ -52,9 +52,10 @@ clock = lambda: now_local(cfg.timezone)
 
 # Real Instamart: explicit opt-in (INSTAMART_BACKEND=real) and a stored OAuth token, or this refuses
 # to start. Nothing here has run against the real API yet -- see DRYRUN.md.
+oauth = None
 if cfg.instamart_backend == "real":
     oauth = OAuthClient(TokenStore(os.environ.get("SWIGGY_TOKEN_PATH", ".swiggy_token")),
-                        os.environ.get("SWIGGY_OAUTH_REDIRECT_URI", "http://localhost/callback"))
+                        os.environ.get("SWIGGY_OAUTH_REDIRECT_URI", "http://localhost/auth/callback"))
     store = RealInstamart(oauth, cfg)
 else:
     store = MockInstamart()
@@ -88,4 +89,4 @@ if os.environ.get("GEMINI_API_KEY"):
         daily_budget=int(os.environ.get("GEMINI_DAILY_BUDGET", "40"))))
 else:
     parser = RuleIntentParser()
-app = create_app(agent, parser, secrets, clock=clock, dispatcher=dispatcher, chat_tokens=chat_tokens)
+app = create_app(agent, parser, secrets, clock=clock, dispatcher=dispatcher, chat_tokens=chat_tokens, oauth=oauth)

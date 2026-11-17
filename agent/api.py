@@ -75,7 +75,7 @@ def _digits(phone: str) -> str:
 
 
 def create_app(agent, parser, secrets: ApiSecrets, clock=None, lock=None, scheduler_interval: Optional[int] = 60,
-               dispatcher=None, dispatcher_interval: int = 3, chat_tokens: Optional[dict] = None):
+               dispatcher=None, dispatcher_interval: int = 3, chat_tokens: Optional[dict] = None, oauth=None):
     clock = clock or (lambda: now_local(agent.cfg.timezone))
     lock = lock or threading.Lock()
     scheduler = Scheduler(agent, clock, lock)
@@ -344,6 +344,21 @@ def create_app(agent, parser, secrets: ApiSecrets, clock=None, lock=None, schedu
             run = agent.tick(clock(), order_now=True)
             return {"run": run.id if run else None, "state": run.state.value if run else None,
                     "display": agent.fridge.display}
+
+    # ------------------------------------------------------------------ Swiggy OAuth redirect
+    # Only the redirect target. Starting the flow (register_client + build_authorize_url) is a
+    # one-off, run by hand once Builders Club access is approved -- see agent/oauth.py and DRYRUN.md.
+    @app.get("/auth/callback")
+    def auth_callback(code: str = Query(""), state: str = Query(""), error: str = Query("")):
+        if oauth is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if error or not code or not state:
+            return HTMLResponse("<p>Sign-in did not complete. Close this tab and try again.</p>", status_code=400)
+        try:
+            oauth.exchange_code(code, state)
+        except Exception:
+            return HTMLResponse("<p>Sign-in did not complete. Close this tab and try again.</p>", status_code=400)
+        return HTMLResponse("<p>Signed in with Swiggy. You can close this tab.</p>")
 
     @app.get("/status")
     def status(x_fridge_key: Optional[str] = Header(None)):

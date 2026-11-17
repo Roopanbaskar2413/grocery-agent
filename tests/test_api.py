@@ -295,6 +295,56 @@ def test_scheduler_warns_when_the_fridge_goes_quiet(rig):
     assert any("No update from the fridge" in t for t in rig.to(P1))
 
 
+# ---------------------------------------------------------------- Swiggy OAuth redirect
+class FakeOAuth:
+    """Stands in for agent.oauth.OAuthClient: records what it was asked to exchange."""
+    def __init__(self, fail=False):
+        self.calls = []
+        self.fail = fail
+
+    def exchange_code(self, code, state):
+        self.calls.append((code, state))
+        if self.fail:
+            raise RuntimeError("unknown or expired OAuth state")
+
+
+def make_app(tmp_path, oauth=None):
+    agent = Agent(MockFridge(), MockInstamart(), ConsoleMessenger(),
+                  Settings(recipients={P1: "Roopan"}), Database(str(tmp_path / "o.db")))
+    return TestClient(create_app(agent, RuleIntentParser(), SECRETS, clock=Clock(NOON),
+                                 scheduler_interval=None, oauth=oauth))
+
+
+def test_auth_callback_is_not_found_when_oauth_is_not_configured(tmp_path):
+    client = make_app(tmp_path, oauth=None)
+    assert client.get("/auth/callback?code=abc&state=xyz").status_code == 404
+
+
+def test_auth_callback_exchanges_the_code(tmp_path):
+    oauth = FakeOAuth()
+    client = make_app(tmp_path, oauth=oauth)
+    r = client.get("/auth/callback?code=the-code&state=xyz")
+    assert r.status_code == 200
+    assert oauth.calls == [("the-code", "xyz")]
+
+
+def test_auth_callback_handles_a_denied_or_failed_exchange_without_leaking_detail(tmp_path):
+    oauth = FakeOAuth(fail=True)
+    client = make_app(tmp_path, oauth=oauth)
+    r = client.get("/auth/callback?code=the-code&state=xyz")
+    assert r.status_code == 400
+    assert "the-code" not in r.text and "xyz" not in r.text
+
+
+def test_auth_callback_rejects_an_error_or_missing_params_without_calling_exchange(tmp_path):
+    oauth = FakeOAuth()
+    client = make_app(tmp_path, oauth=oauth)
+    assert client.get("/auth/callback?error=access_denied").status_code == 400
+    assert client.get("/auth/callback?code=abc").status_code == 400          # no state
+    assert client.get("/auth/callback?state=xyz").status_code == 400         # no code
+    assert oauth.calls == []
+
+
 # ---------------------------------------------------------------- the structural guarantee
 def test_api_module_has_no_path_to_ordering():
     src = Path(__file__).resolve().parents[1].joinpath("agent", "api.py").read_text()
