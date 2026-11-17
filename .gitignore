@@ -2,6 +2,7 @@
 .swiggy_token
 .vapid_private.pem
 .vapid_public.pem
+.env.funnel
 *.db
 *.db-*
 __pycache__/
