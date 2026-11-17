@@ -81,6 +81,10 @@ class Selectors:
     card_size: str = "[data-testid='product-size']"
     card_out_of_stock: str = "[data-testid='product-sold-out']"
     card_add_button: str = '[data-testid="buttonpair-add"]'
+    # Once a product is already in the cart, its search card shows a stepper instead of a plain
+    # add button -- this is the stepper's own quantity number, a DIFFERENT testid than the cart
+    # page's add_buttons_center. Excluded from card price detection (see _card_price).
+    card_qty_count: str = '[data-testid="buttonpair-count"]'
 
     # Pack-size variant picker: appears instead of adding immediately, for some products.
     # variant_modal is still an unverified heuristic (ARIA dialog role); the two add/confirm
@@ -214,10 +218,11 @@ class PlaywrightInstamartPage:
 
     def _card_price(self, card) -> int | None:
         """Prefer a non-struck-through amount (the real/current price); fall back to whatever's
-        there if every amount found happens to be struck through. Excludes cart_line_qty: a
-        product already in the cart shows a quantity stepper on its search card too, and that
-        counter is just as much a pure-digit leaf as the cart-row one that caused the same bug."""
-        amounts = self._rupee_amounts(card, self.sel.cart_line_qty)
+        there if every amount found happens to be struck through. Excludes card_qty_count: a
+        live run confirmed the search card's own stepper number (shown once the product is
+        already in the cart) uses a different testid than the cart row's, and still got picked
+        up as the price until this was added too."""
+        amounts = self._rupee_amounts(card, self.sel.card_qty_count)
         live = [a["amount"] for a in amounts if not a["struck"]]
         if live:
             return live[0]
