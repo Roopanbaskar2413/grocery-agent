@@ -185,7 +185,7 @@ class PlaywrightInstamartPage:
         alt = img.get_attribute("alt") if img else None
         return alt.strip() if alt else None
 
-    def _rupee_amounts(self, element) -> list[dict]:
+    def _rupee_amounts(self, element, exclude_selector: str = None) -> list[dict]:
         """The ₹ glyph in front of a price isn't a plain ₹ (U+20B9) text character -- DevTools
         showed it's drawn by an icon font (what prints as garbled boxes when you copy it), and
         checking computed ::before content for it turned out unreliable too (the element DevTools
@@ -194,18 +194,23 @@ class PlaywrightInstamartPage:
         ("45", not "₹45", confirmed in DevTools), with nothing else in it -- unlike a size/weight
         label ("430 g"), which always has a unit attached in the same text node. Walk every leaf
         descendant and keep the ones whose trimmed text is *purely* digits; that's specific enough
-        to rule out size/weight without needing to find the currency symbol at all."""
-        return element.evaluate("""(root) => {
+        to rule out size/weight without needing to find the currency symbol at all.
+
+        But a cart row ALSO has a quantity counter ("1") that is itself a pure-digit leaf -- a
+        live run picked that up as the price. `exclude_selector` (e.g. cart_line_qty) rules that
+        out; callers with no such competing element (the product card, pre-add) pass None."""
+        return element.evaluate("""(root, excludeSelector) => {
             const out = [];
             for (const el of root.querySelectorAll('*')) {
                 if (el.children.length > 0) continue;  // leaves only
+                if (excludeSelector && el.matches(excludeSelector)) continue;
                 const text = (el.textContent || '').trim();
                 if (!/^\\d+$/.test(text)) continue;
                 const struck = window.getComputedStyle(el).textDecorationLine.includes('line-through');
                 out.push({amount: parseInt(text, 10), struck});
             }
             return out;
-        }""")
+        }""", exclude_selector)
 
     def _card_price(self, card) -> int | None:
         """Prefer a non-struck-through amount (the real/current price); fall back to whatever's
@@ -241,8 +246,10 @@ class PlaywrightInstamartPage:
         return [r for r in rows if r.query_selector(self.sel.cart_line_name) is not None]
 
     def _row_price(self, row) -> int | None:
-        """Same ::before-content problem as the product card's price -- see _rupee_amounts."""
-        amounts = self._rupee_amounts(row)
+        """Same pure-digit-leaf approach as the product card's price -- see _rupee_amounts. Excludes
+        cart_line_qty: a live run showed the quantity counter ("1") is itself a pure-digit leaf and
+        got picked up as the price, giving a ₹2 cart total for two ₹40+ items."""
+        amounts = self._rupee_amounts(row, self.sel.cart_line_qty)
         live = [a["amount"] for a in amounts if not a["struck"]]
         if live:
             return live[0]
