@@ -3,6 +3,7 @@
 .vapid_private.pem
 .vapid_public.pem
 .env.funnel
+.instamart_browser_profile/
 *.db
 *.db-*
 __pycache__/

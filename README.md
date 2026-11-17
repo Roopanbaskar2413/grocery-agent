@@ -192,6 +192,34 @@ run against the real API -- Builders Club access is pending, and `Settings.insta
   stored token.
 - See DRYRUN.md's "First real run against Instamart" section for exactly what to verify once access arrives.
 
+## Browser adapter (agent/browser_instamart.py, agent/browser_instamart_playwright.py) -- manual verification only
+A third Instamart implementation, driving the real logged-in Instamart website with Playwright instead of
+calling an API. It exists to verify the pipeline (search -> cart -> price/stock re-check) against the real
+site right now, without waiting on Builders Club access. Same interface as the other two adapters, so
+`agent/orchestrator.py` does not change -- but **this is not wired into `run_dev.py` or `Settings.instamart_backend`**,
+it is a tool you run yourself with `browser_pipeline_check.py`, not a third production backend choice.
+
+Deliberate, permanent safety choice, not a gap to fill in later: `checkout()` here never clicks the final
+"place order" button. It re-reads price and stock (retrying until two consecutive reads agree, to ride out
+page-load delays) and raises `InstamartCheckoutPaused` with the reconciled cart every single time, so a
+human decides whether to place it in the still-open browser tab. Reasons:
+- checkout is the one action with real account and money risk (Swiggy's ToS almost certainly prohibits
+  automated access to the consumer site; a flagged account is a real possible outcome of this adapter,
+  unlike the mock and MCP adapters which never touch a real account at all).
+- if the live checkout flow needs an OTP or app confirmation, there is nowhere in this synchronous interface
+  to wait for that -- you being present for the one real click sidesteps the problem entirely.
+- because code never performs the risky action, the "was the order actually placed" ambiguity that
+  `real_instamart.py` resolves with `get_orders()` never arises here.
+
+Every CSS selector lives in one file (`agent/browser_instamart_playwright.py`'s `Selectors` dataclass) and is
+an **unverified placeholder** -- there is no way to see Instamart's real markup without a browser, so this
+will not work until you inspect the live page yourself and fill them in. Expect it to break again on any
+Instamart frontend redeploy, with no changelog to warn you, unlike the MCP tool schemas.
+
+Tested with `FakeInstamartPage`, a fully in-memory double (`tests/test_browser_instamart.py`) -- no real
+browser or Playwright needed to run the test suite; Playwright is only required to actually run
+`browser_pipeline_check.py` against the live site.
+
 ## Not built yet (next milestones)
 exercising the real Instamart adapter against the live API (needs Builders Club access, requested separately),
 UPI payment polling (the MCP tools exist -- `check_payment_status`, `confirm_order` -- but the orchestrator's
