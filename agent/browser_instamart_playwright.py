@@ -44,9 +44,20 @@ class Selectors:
       variant_modal_add_button, variant_modal_confirm_button
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
-      card_size, card_out_of_stock, cart_line_item, cart_line_qty,
-      cart_subtotal, cart_delivery_fee, payment_cod_option, payment_upi_option,
-      orders_page_url, order_row, order_id_in_row, variant_modal
+      card_size, card_out_of_stock, cart_subtotal, cart_delivery_fee, payment_cod_option,
+      payment_upi_option, orders_page_url, order_row, order_id_in_row, variant_modal
+
+    cart_line_item ([role="listitem"]) is a real attribute but a loose one -- it may also match
+    unrelated list items elsewhere on the page (e.g. a "did you forget?" carousel). We filter to
+    rows that have cart_line_name, which should rule those out, but verify this against the real
+    page once you can see one with a non-product listitem nearby.
+
+    cart row price has no selector at all (same hashed-class problem as the product card) -- read
+    via a ₹<digits> regex over the row's own text instead, taking the LAST match so a
+    struck-through original price doesn't win over the real discounted one (see _row_price).
+    cart_subtotal has no confirmed selector yet either, so cart_totals() falls back to summing
+    each row's own price when it's missing -- self-consistent, but unverified against a real
+    subtotal line (the "store unserviceable" banner was hiding it when last checked).
 
     card name and price have no selector at all -- their text divs only have hashed CSS classes
     with no stable hook, so PlaywrightInstamartPage reads the name off the card's <img alt=...>
@@ -77,8 +88,10 @@ class Selectors:
     variant_modal_add_button: str = '[data-testid="add_buttons_center"]'
     variant_modal_confirm_button: str = '[data-testid="InstamartItemCustomizationWidget-cta"]'
 
-    cart_line_item: str = "[data-testid='cart-item']"
-    cart_line_qty: str = "[data-testid='cart-item-qty']"
+    cart_line_item: str = '[role="listitem"]'
+    cart_line_name: str = '[data-testid="cart-item-name"]'
+    cart_line_size: str = '[data-testid="cart-item-quantity"]'  # really the pack size, not the qty
+    cart_line_qty: str = '[data-testid="add_buttons_center"]'
     cart_line_qty_plus: str = '[data-testid="add_buttons_plus"]'
     cart_line_qty_minus: str = '[data-testid="add_buttons_minus"]'
     cart_line_remove: str = "[data-testid='cart-item-remove']"
@@ -150,29 +163,47 @@ class PlaywrightInstamartPage:
         return href or name
 
     def _fallback_id(self, row) -> str:
-        """Cart-row id fallback when there's no data-product-id -- composite of visible name/size
-        text. cart_line_item markup is still unverified; revisit once you've inspected it."""
-        name_el = row.query_selector("[data-testid='product-name']")
-        size_el = row.query_selector(self.sel.card_size)
+        """Cart-row id fallback when there's no data-product-id -- composite of the row's real
+        name/size testids. Note this id scheme isn't guaranteed to match whatever id a search-page
+        card produced for the same product -- mapping a search result to its cart row is a known
+        gap, not solved here (see README)."""
+        name_el = row.query_selector(self.sel.cart_line_name)
+        size_el = row.query_selector(self.sel.cart_line_size)
         return f"{(name_el.text_content() if name_el else '').strip()}::{(size_el.text_content() if size_el else '').strip()}"
+
+    def _cart_rows(self):
+        """[role="listitem"] can match unrelated list items elsewhere on the page -- keep only the
+        ones that look like an actual product row (have the real cart-item-name testid)."""
+        rows = self.page.query_selector_all(self.sel.cart_line_item)
+        return [r for r in rows if r.query_selector(self.sel.cart_line_name) is not None]
+
+    def _row_price(self, row) -> int | None:
+        """Same hashed-class problem as the product card's price -- pull ₹<digits> out of the
+        row's own text instead. Take the LAST match: a discounted line shows the struck-through
+        original price before the real one (e.g. "₹100₹98"), and we want the real one."""
+        matches = re.findall(r"₹(\d+)", row.text_content() or "")
+        return int(matches[-1]) if matches else None
 
     def cart_items(self) -> list[dict]:
         self.page.goto(self.sel.cart_url)
         self.page.wait_for_load_state("networkidle", timeout=self.nav_timeout_ms)
-        rows = self.page.query_selector_all(self.sel.cart_line_item)
         out = []
-        for row in rows:
-            pid = row.get_attribute("data-product-id") or self._fallback_id(row)
+        for row in self._cart_rows():
             qty_el = row.query_selector(self.sel.cart_line_qty)
             qty = int((qty_el.text_content() if qty_el else "1").strip() or "1")
-            out.append({"id": pid, "qty": qty})
+            out.append({"id": self._fallback_id(row), "qty": qty})
         return out
 
     def cart_totals(self) -> dict:
         subtotal_el = self.page.query_selector(self.sel.cart_subtotal)
+        if subtotal_el is not None:
+            subtotal = _parse_rupees(subtotal_el.text_content())
+        else:
+            # No confirmed subtotal selector yet -- fall back to summing each row's own price.
+            subtotal = sum(self._row_price(row) or 0 for row in self._cart_rows())
         fee_el = self.page.query_selector(self.sel.cart_delivery_fee)
-        return {"subtotal": _parse_rupees(subtotal_el.text_content() if subtotal_el else "0"),
-               "delivery_fee": _parse_rupees(fee_el.text_content() if fee_el else "0")}
+        delivery_fee = _parse_rupees(fee_el.text_content()) if fee_el else 0
+        return {"subtotal": subtotal, "delivery_fee": delivery_fee}
 
     def add_item(self, product_id: str, qty: int) -> None:
         card = self._find_card(product_id)
