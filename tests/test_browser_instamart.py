@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.browser_instamart import (BrowserInstamart, InstamartCheckoutPaused, InstamartMinOrderError,
-                                     InstamartPageError, PRICE_RECHECK_MAX_ATTEMPTS)
+from agent.browser_instamart import (ADD_ITEM_VERIFY_ATTEMPTS, BrowserInstamart, InstamartCheckoutPaused,
+                                     InstamartMinOrderError, InstamartPageError, PRICE_RECHECK_MAX_ATTEMPTS)
 
 
 class FakeInstamartPage:
@@ -17,6 +17,7 @@ class FakeInstamartPage:
         self.totals_script = None    # optional list of {"subtotal","delivery_fee"} dicts, in order
         self._totals_calls = 0
         self.calls = []
+        self.add_item_noop_count = 0  # next N add_item calls look like they happened but don't stick
 
     def search(self, query):
         self.calls.append(("search", query))
@@ -38,6 +39,9 @@ class FakeInstamartPage:
 
     def add_item(self, product_id, qty):
         self.calls.append(("add_item", product_id, qty))
+        if self.add_item_noop_count > 0:
+            self.add_item_noop_count -= 1
+            return  # looks like it happened (no error) but never touches self._cart
         self._cart[product_id] = qty
 
     def set_quantity(self, product_id, qty):
@@ -126,6 +130,24 @@ def test_update_cart_leaves_an_already_correct_line_untouched(store, page):
     page._cart = {"p1": 2}
     store.update_cart([("p1", 2)])
     assert not any(c[0] in ("add_item", "set_quantity", "remove_item") for c in page.calls)
+
+
+# ---------------------------------------------------------------- break this on purpose: a confirmed
+# add that didn't actually stick (live run: the page's own stepper appeared, but the item was
+# missing from the cart afterward anyway)
+def test_update_cart_retries_an_add_that_didnt_stick_until_it_verifies(store, page):
+    page.add_item_noop_count = 2  # first two add_item calls for p1 are no-ops
+    store.update_cart([("p1", 1)])
+    assert [c for c in page.calls if c[0] == "add_item"] == [("add_item", "p1", 1)] * 3
+    assert page._cart == {"p1": 1}
+
+
+def test_update_cart_raises_if_an_add_never_verifies(store, page):
+    page.add_item_noop_count = 999  # never actually sticks
+    with pytest.raises(InstamartPageError):
+        store.update_cart([("p1", 1)])
+    assert len([c for c in page.calls if c[0] == "add_item"]) == ADD_ITEM_VERIFY_ATTEMPTS
+    assert page._cart == {}
 
 
 # ---------------------------------------------------------------- payment options / orders passthrough

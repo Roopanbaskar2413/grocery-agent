@@ -39,6 +39,7 @@ log = logging.getLogger("agent.browser_instamart")
 MIN_ORDER_RUPEES = 99                # Instamart's own minimum, same as real_instamart.py
 PRICE_RECHECK_MAX_ATTEMPTS = 4       # give up and raise if the cart never settles this many reads
 PRICE_RECHECK_GAP_SECONDS = 1.5
+ADD_ITEM_VERIFY_ATTEMPTS = 3         # give up and raise if an add never shows up in the real cart
 
 
 class InstamartMinOrderError(RuntimeError):
@@ -138,9 +139,24 @@ class BrowserInstamart:
                 self.page.remove_item(pid)
         for pid, qty in wanted.items():
             if pid not in current:
-                self.page.add_item(pid, qty)
+                self._add_and_verify(pid, qty)
             elif current[pid] != qty:
                 self.page.set_quantity(pid, qty)
+
+    def _add_and_verify(self, pid, qty):
+        """The page's own on-screen stepper confirming an add is only a client-side signal -- a
+        live run with several items added back to back showed one whose stepper DID appear
+        afterwards missing from the cart anyway, while two others timed out outright. Re-read the
+        real cart after each add and retry rather than trusting the page alone; raise clearly if
+        it never sticks instead of silently moving on and losing the item."""
+        for _ in range(ADD_ITEM_VERIFY_ATTEMPTS):
+            self.page.add_item(pid, qty)
+            current = {it["id"]: it["qty"] for it in self.page.cart_items()}
+            if current.get(pid) == qty:
+                return
+        raise InstamartPageError(
+            f"could not confirm {pid!r} was added to the cart after {ADD_ITEM_VERIFY_ATTEMPTS} attempts"
+        )
 
     def get_payment_options(self):
         self._pace("get_payment_options")
