@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Grocery agent</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --text:#16181d; --muted:#6b7280; --me:#1a7f4b; --meText:#fff; --line:#e5e7eb; --btn:#1a7f4b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#111317; --card:#1b1e24; --text:#eceef2; --muted:#9aa1ad; --line:#2a2f38; --me:#1f9a5c; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100%; max-width: 640px; margin: 0 auto; }
+  header { padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--card); display: flex; justify-content: space-between; align-items: baseline; }
+  header b { font-size: 17px; } header span { color: var(--muted); font-size: 13px; }
+  #log { flex: 1; overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 85%; padding: 9px 12px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; background: var(--card); border: 1px solid var(--line); align-self: flex-start; }
+  .msg.user { align-self: flex-end; background: var(--me); color: var(--meText); border-color: transparent; }
+  .time { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); } .user .time { color: #d6f3e3; }
+  .buttons { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .buttons button { flex: 1; min-width: 110px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--btn); background: var(--btn); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  .buttons button.secondary { background: transparent; color: var(--btn); }
+  .buttons button:disabled { opacity: .4; cursor: default; }
+  form#send { display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--card); }
+  input[type=text], input[type=password] { flex: 1; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+  form#send button, #login button { padding: 0 16px; border-radius: 10px; border: 0; background: var(--btn); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  #login { margin: auto 16px; padding: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; display: none; flex-direction: column; gap: 12px; }
+  #login p { margin: 0; color: var(--muted); font-size: 14px; } #login .row { display: flex; gap: 8px; } #login .err { color: #c0392b; min-height: 1em; }
+  #banner { display: none; padding: 6px 12px; background: #fff4d6; color: #7a5b00; font-size: 13px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header><b>Grocery agent</b><span id="who"></span></header>
+  <div id="banner">Cannot reach the agent. Retrying...</div>
+  <div id="login">
+    <b>Sign in</b>
+    <p>Paste the chat token you were given. It stays on this device.</p>
+    <div class="row"><input id="token" type="password" autocomplete="off" placeholder="Chat token"><button id="signin" type="button">Sign in</button></div>
+    <div class="err" id="err"></div>
+  </div>
+  <div id="log" aria-live="polite"></div>
+  <form id="send" autocomplete="off">
+    <input id="text" type="text" maxlength="500" placeholder="Message the agent, like: add milk" autocomplete="off">
+    <button type="submit">Send</button>
+  </form>
+</div>
+<script src="/chat/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+httpx      # used by the test client
+pytest
+cryptography   # encrypts the stored Instamart OAuth token (agent/oauth.py)

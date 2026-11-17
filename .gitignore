@@ -1,0 +1,7 @@
+.chat_tokens
+.swiggy_token
+*.db
+*.db-*
+__pycache__/
+.pytest_cache/
+.venv/
