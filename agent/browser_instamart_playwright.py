@@ -22,7 +22,6 @@ install chromium`), via a small script like:
         store = BrowserInstamart(PlaywrightInstamartPage(page, Selectors()))
         # ... call store.search_products(...), store.update_cart(...), store.get_cart(), etc.
 """
-import re
 from dataclasses import dataclass
 
 
@@ -167,11 +166,35 @@ class PlaywrightInstamartPage:
         alt = img.get_attribute("alt") if img else None
         return alt.strip() if alt else None
 
+    def _rupee_amounts(self, element) -> list[dict]:
+        """The ₹ symbol here isn't real text -- it's a CSS ::before pseudo-element's `content`,
+        confirmed in DevTools (the actual DOM text node under it is just "45"). A ₹<digits> text
+        regex can never match that. Instead, walk every descendant in-page and check each one's
+        *computed* ::before content for a literal ₹, collecting its digits and whether it's
+        struck through (a discounted line shows both the original and the real price, and which
+        one comes first differs between the cart page and the search cards -- line-through is
+        the reliable signal, not position)."""
+        return element.evaluate("""(root) => {
+            const out = [];
+            for (const el of root.querySelectorAll('*')) {
+                const before = window.getComputedStyle(el, '::before').content;
+                if (!before || before.replace(/["']/g, '').trim() !== '₹') continue;
+                const digits = (el.textContent || '').replace(/[^0-9]/g, '');
+                if (!digits) continue;
+                const struck = window.getComputedStyle(el).textDecorationLine.includes('line-through');
+                out.push({amount: parseInt(digits, 10), struck});
+            }
+            return out;
+        }""")
+
     def _card_price(self, card) -> int | None:
-        """Same hashed-class problem as the name -- pull the first ₹<digits> out of the card's
-        visible text instead of a specific price-div selector."""
-        match = re.search(r"₹(\d+)", card.text_content() or "")
-        return int(match.group(1)) if match else None
+        """Prefer a non-struck-through amount (the real/current price); fall back to whatever's
+        there if every amount found happens to be struck through."""
+        amounts = self._rupee_amounts(card)
+        live = [a["amount"] for a in amounts if not a["struck"]]
+        if live:
+            return live[0]
+        return amounts[0]["amount"] if amounts else None
 
     def _card_id(self, card, name: str) -> str:
         """Prefer a real product-page link if the card has one; fall back to the name text, which
@@ -196,11 +219,12 @@ class PlaywrightInstamartPage:
         return [r for r in rows if r.query_selector(self.sel.cart_line_name) is not None]
 
     def _row_price(self, row) -> int | None:
-        """Same hashed-class problem as the product card's price -- pull ₹<digits> out of the
-        row's own text instead. Take the LAST match: a discounted line shows the struck-through
-        original price before the real one (e.g. "₹100₹98"), and we want the real one."""
-        matches = re.findall(r"₹(\d+)", row.text_content() or "")
-        return int(matches[-1]) if matches else None
+        """Same ::before-content problem as the product card's price -- see _rupee_amounts."""
+        amounts = self._rupee_amounts(row)
+        live = [a["amount"] for a in amounts if not a["struck"]]
+        if live:
+            return live[0]
+        return amounts[0]["amount"] if amounts else None
 
     def cart_items(self) -> list[dict]:
         self.page.goto(self.sel.cart_url)
