@@ -26,6 +26,9 @@ import re
 from dataclasses import dataclass
 
 
+SEARCH_RESULT_POLL_MS = 30000  # how long to keep polling for the real result grid to settle
+
+
 class VariantModalRequiresSelectors(Exception):
     """Raised when add_item() finds a pack-size variant-picker modal open after clicking the add
     button, but can't confidently pick an option: either Selectors.variant_modal_add_button /
@@ -128,12 +131,13 @@ class PlaywrightInstamartPage:
         self.page.keyboard.press("Enter")
         self.page.wait_for_selector(self.sel.search_result_card, timeout=self.nav_timeout_ms)
         # wait_for_selector resolving doesn't mean the result list has finished rendering -- seen
-        # it resolve on a transient/early card while the real grid is still several seconds from
-        # showing up. Poll for up to the same timeout budget rather than trusting one quick read.
+        # it resolve on a transient/early card while the real grid takes much longer (tens of
+        # seconds observed live) to actually show up. Poll on a separate, longer budget than the
+        # nav timeout rather than trusting one quick read.
         cards = self.page.query_selector_all(self.sel.search_result_card)
         elapsed_ms = 0
         poll_ms = 500
-        while not cards and elapsed_ms < self.nav_timeout_ms:
+        while not cards and elapsed_ms < SEARCH_RESULT_POLL_MS:
             self.page.wait_for_timeout(poll_ms)
             elapsed_ms += poll_ms
             cards = self.page.query_selector_all(self.sel.search_result_card)
