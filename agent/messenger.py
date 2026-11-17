@@ -24,13 +24,17 @@ APP_PREFIX = "app:"
 
 
 class ChatMessenger:
-    """Messages for people using the in-app chat. They are stored, and the app fetches them."""
+    """Messages for people using the in-app chat. They are stored, and the app fetches them.
+    If a push sender is given (agent/push.py), a Web Push notification is also sent best-effort --
+    storage is what the page actually reads, the push is only a way to get someone's attention."""
 
-    def __init__(self, db, clock):
-        self.db, self.clock = db, clock
+    def __init__(self, db, clock, push=None):
+        self.db, self.clock, self.push = db, clock, push
 
     def send(self, to, text, buttons=None):
         self.db.chat_add(to, "agent", text, buttons or [], self.clock())
+        if self.push:
+            self.push.notify(to, "Cart ready" if buttons else "Grocery agent", text[:180])
 
 
 class RoutingMessenger:

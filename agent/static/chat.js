@@ -83,6 +83,40 @@
   }
   function tap(id) { post("/chat/tap", { button_id: id }); }
 
+  function urlBase64ToUint8Array(base64) {
+    var padding = "=".repeat((4 - base64.length % 4) % 4);
+    var raw = atob((base64 + padding).replace(/-/g, "+").replace(/_/g, "/"));
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  // Push is a nice-to-have on top of the 2-second poll above, not a replacement for it: any
+  // failure here (no permission, no server key configured, an unsupported browser) is silent.
+  function setupPush() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    navigator.serviceWorker.register("/chat/sw.js").then(function (reg) {
+      return api("/chat/vapid-public-key").then(function (r) { return r.ok ? r.json() : null; });
+    }).then(function (data) {
+      if (!data || !data.key) return null;
+      return navigator.serviceWorker.ready.then(function (reg) {
+        return reg.pushManager.getSubscription().then(function (existing) {
+          if (existing) return existing;
+          return Notification.requestPermission().then(function (perm) {
+            if (perm !== "granted") return null;
+            return reg.pushManager.subscribe({ userVisibleOnly: true,
+                                              applicationServerKey: urlBase64ToUint8Array(data.key) });
+          });
+        });
+      });
+    }).then(function (sub) {
+      if (!sub) return;
+      var k = sub.toJSON().keys;
+      return api("/chat/push-subscribe", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint: sub.endpoint, p256dh: k.p256dh, auth: k.auth }) });
+    }).catch(function () { /* push is optional; the poll loop still works without it */ });
+  }
+
   $("send").addEventListener("submit", function (e) {
     e.preventDefault();
     var box = $("text"), text = box.value.trim();
@@ -94,11 +128,11 @@
     var t = $("token").value.trim();
     if (!t) return;
     token = t; save(t); $("token").value = ""; lastId = 0; messages = [];
-    showChat(); poll();
+    showChat(); poll(); setupPush();
   });
   document.addEventListener("visibilitychange", poll);
 
   token = load();
-  if (token) { showChat(); poll(); } else { showLogin(""); }
+  if (token) { showChat(); poll(); setupPush(); } else { showLogin(""); }
   setInterval(poll, 2000);
 })();

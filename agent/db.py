@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS processed_messages (id TEXT PRIMARY KEY, seen_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    recipient TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS push_subscriptions_recipient ON push_subscriptions (recipient);
 """
 
 
@@ -319,6 +327,23 @@ class Database:
             "SELECT role, text FROM chat_turns WHERE chat_key=? AND at>=? ORDER BY id DESC LIMIT ?",
             (chat_key, cutoff, limit)).fetchall()
         return [(r["role"], r["text"]) for r in reversed(rows)]
+
+    # ---------------------------------------------------------------- push subscriptions (in-app chat)
+    def save_push_subscription(self, recipient, endpoint, p256dh, auth_key, now):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO push_subscriptions (endpoint, recipient, p256dh, auth, created) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(endpoint) DO UPDATE SET recipient=excluded.recipient, p256dh=excluded.p256dh, "
+                "auth=excluded.auth", (endpoint, recipient, p256dh, auth_key, now.isoformat()))
+
+    def push_subscriptions(self, recipient):
+        rows = self.conn.execute("SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE recipient=?",
+                                 (recipient,)).fetchall()
+        return [{"endpoint": r["endpoint"], "keys": {"p256dh": r["p256dh"], "auth": r["auth"]}} for r in rows]
+
+    def remove_push_subscription(self, endpoint):
+        with self.conn:
+            self.conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
 
     def kv_get(self, key, default=None):
         r = self.conn.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()

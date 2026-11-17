@@ -22,7 +22,8 @@ A1, A2, A3 = "app:1", "app:2", "app:3"
 
 
 class ChatRig:
-    def __init__(self, tmp_path, mode="permission", parser=None, with_phone=False, cod=True):
+    def __init__(self, tmp_path, mode="permission", parser=None, with_phone=False, cod=True,
+                 push=None, vapid_public_key=None):
         self.fridge, self.store = MockFridge(), MockInstamart(cod_available=cod)
         recipients = {A1: "Roopan", A2: "Person B", A3: "Person C"}
         if with_phone:
@@ -30,10 +31,11 @@ class ChatRig:
         self.db = Database(str(tmp_path / "c.db"))
         self.clock = Clock(NOON)
         self.wa = ConsoleMessenger()
-        msg = RoutingMessenger(ChatMessenger(self.db, self.clock), self.wa)
+        msg = RoutingMessenger(ChatMessenger(self.db, self.clock, push=push), self.wa)
         self.agent = Agent(self.fridge, self.store, msg, Settings(mode=mode, recipients=recipients), self.db)
         self.app = create_app(self.agent, parser or RuleIntentParser(), SECRETS, clock=self.clock,
-                              scheduler_interval=None, chat_tokens={T1: A1, T2: A2, T3: A3})
+                              scheduler_interval=None, chat_tokens={T1: A1, T2: A2, T3: A3},
+                              vapid_public_key=vapid_public_key)
         self.client = TestClient(self.app)
 
     @staticmethod
@@ -96,6 +98,60 @@ def test_chat_script_never_renders_text_as_html():
     js = Path(__file__).resolve().parents[1].joinpath("agent", "static", "chat.js").read_text()
     for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
         assert banned not in js, banned
+
+
+# ---------------------------------------------------------------- push notifications
+def test_service_worker_is_public_and_holds_no_secrets(rig):
+    sw = rig.client.get("/chat/sw.js")
+    assert sw.status_code == 200
+    for secret in (T1, T2, "fridge-key", "app-secret", "verify-me"):
+        assert secret not in sw.text
+
+
+def test_vapid_public_key_needs_a_token_and_404s_when_not_configured(tmp_path):
+    rig = ChatRig(tmp_path)        # no vapid_public_key passed
+    assert rig.client.get("/chat/vapid-public-key").status_code == 401
+    assert rig.client.get("/chat/vapid-public-key", headers=rig.auth(T1)).status_code == 404
+
+
+def test_vapid_public_key_is_served_when_configured(tmp_path):
+    rig = ChatRig(tmp_path, vapid_public_key="a-base64url-key")
+    r = rig.client.get("/chat/vapid-public-key", headers=rig.auth(T1))
+    assert r.status_code == 200 and r.json() == {"key": "a-base64url-key"}
+
+
+def test_push_subscribe_requires_a_token(rig):
+    body = {"endpoint": "https://push.example/ep1", "p256dh": "p1", "auth": "a1"}
+    assert rig.client.post("/chat/push-subscribe", json=body).status_code == 401
+
+
+def test_push_subscribe_stores_it_under_the_sender(rig):
+    body = {"endpoint": "https://push.example/ep1", "p256dh": "p1", "auth": "a1"}
+    r = rig.client.post("/chat/push-subscribe", json=body, headers=rig.auth(T1))
+    assert r.status_code == 200
+    subs = rig.db.push_subscriptions(A1)
+    assert subs == [{"endpoint": "https://push.example/ep1", "keys": {"p256dh": "p1", "auth": "a1"}}]
+    assert rig.db.push_subscriptions(A2) == []     # not visible to another person's token
+
+
+def test_push_unsubscribe_removes_it(rig):
+    body = {"endpoint": "https://push.example/ep1", "p256dh": "p1", "auth": "a1"}
+    rig.client.post("/chat/push-subscribe", json=body, headers=rig.auth(T1))
+    r = rig.client.post("/chat/push-unsubscribe", json={"endpoint": body["endpoint"]}, headers=rig.auth(T1))
+    assert r.status_code == 200
+    assert rig.db.push_subscriptions(A1) == []
+
+
+def test_a_sent_cart_pushes_a_notification_when_push_is_configured(tmp_path):
+    notified = []
+
+    class StubPush:
+        def notify(self, recipient, title, body):
+            notified.append((recipient, title, body))
+
+    rig = ChatRig(tmp_path, push=StubPush())
+    rig.fridge_push()
+    assert notified and notified[0][0] == A1
 
 
 @pytest.mark.parametrize("weak", ["", "short", "x" * 15])

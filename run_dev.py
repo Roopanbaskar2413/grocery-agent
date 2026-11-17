@@ -21,6 +21,7 @@ from agent.mock_fridge import MockFridge
 from agent.mock_instamart import MockInstamart
 from agent.oauth import OAuthClient, TokenStore
 from agent.orchestrator import Agent
+from agent.push import PushSender
 from agent.real_instamart import RealInstamart
 from agent.whatsapp import Dispatcher, OutboxMessenger, WhatsAppClient
 
@@ -73,8 +74,17 @@ if os.environ.get("WHATSAPP_TOKEN") and os.environ.get("WHATSAPP_PHONE_NUMBER_ID
 else:
     messenger = PrintMessenger()                       # no token set: print instead of sending
 
+# Push notifications for the in-app chat: optional, only wakes up a closed tab. The poll loop in
+# chat.js works without it. Generate a key pair once with `vapid --gen` (from pip install py-vapid).
+vapid_public_key = os.environ.get("VAPID_PUBLIC_KEY")
+push_sender = None
+if vapid_public_key and os.environ.get("VAPID_PRIVATE_KEY"):
+    push_sender = PushSender(db, os.environ["VAPID_PRIVATE_KEY"],
+                             os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com"))
+
 if chat_tokens:
-    messenger = RoutingMessenger(ChatMessenger(db, clock), messenger)      # app users get chat, phones get WhatsApp
+    # app users get chat (with push, if configured), phones get WhatsApp
+    messenger = RoutingMessenger(ChatMessenger(db, clock, push=push_sender), messenger)
 agent = Agent(MockFridge(), store, messenger, cfg, db)
 import secrets as _secrets
 # WhatsApp values may be left unset for a chat-only run. A random secret nobody knows keeps the webhook closed.
@@ -89,4 +99,5 @@ if os.environ.get("GEMINI_API_KEY"):
         daily_budget=int(os.environ.get("GEMINI_DAILY_BUDGET", "40"))))
 else:
     parser = RuleIntentParser()
-app = create_app(agent, parser, secrets, clock=clock, dispatcher=dispatcher, chat_tokens=chat_tokens, oauth=oauth)
+app = create_app(agent, parser, secrets, clock=clock, dispatcher=dispatcher, chat_tokens=chat_tokens, oauth=oauth,
+                 vapid_public_key=vapid_public_key)

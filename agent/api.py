@@ -28,7 +28,7 @@ from datetime import timedelta
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -75,7 +75,8 @@ def _digits(phone: str) -> str:
 
 
 def create_app(agent, parser, secrets: ApiSecrets, clock=None, lock=None, scheduler_interval: Optional[int] = 60,
-               dispatcher=None, dispatcher_interval: int = 3, chat_tokens: Optional[dict] = None, oauth=None):
+               dispatcher=None, dispatcher_interval: int = 3, chat_tokens: Optional[dict] = None, oauth=None,
+               vapid_public_key: Optional[str] = None):
     clock = clock or (lambda: now_local(agent.cfg.timezone))
     lock = lock or threading.Lock()
     scheduler = Scheduler(agent, clock, lock)
@@ -303,6 +304,43 @@ def create_app(agent, parser, secrets: ApiSecrets, clock=None, lock=None, schedu
         return Response((STATIC / "chat.js").read_text(), media_type="text/javascript",
                         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
+    @app.get("/chat/sw.js")
+    def chat_sw():
+        return Response((STATIC / "sw.js").read_text(), media_type="text/javascript",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+    # ------------------------------------------------------------------ push notifications (optional)
+    # Best-effort on top of the chat's own poll loop (agent/push.py); nothing here can send a message,
+    # only subscribe/unsubscribe this person's own browser to get notified of one.
+    class PushSubscribe(BaseModel):
+        endpoint: str = Field(min_length=1, max_length=2000)
+        p256dh: str = Field(min_length=1, max_length=512)
+        auth: str = Field(min_length=1, max_length=512)
+
+    class PushUnsubscribe(BaseModel):
+        endpoint: str = Field(min_length=1, max_length=2000)
+
+    @app.get("/chat/vapid-public-key")
+    def chat_vapid_public_key(authorization: Optional[str] = Header(None)):
+        chat_user(authorization)
+        if not vapid_public_key:
+            raise HTTPException(status_code=404, detail="push not configured")
+        return {"key": vapid_public_key}
+
+    @app.post("/chat/push-subscribe")
+    def chat_push_subscribe(body: PushSubscribe, authorization: Optional[str] = Header(None)):
+        who = chat_user(authorization)
+        with lock:
+            agent.db.save_push_subscription(who, body.endpoint, body.p256dh, body.auth, clock())
+        return {"ok": True}
+
+    @app.post("/chat/push-unsubscribe")
+    def chat_push_unsubscribe(body: PushUnsubscribe, authorization: Optional[str] = Header(None)):
+        chat_user(authorization)
+        with lock:
+            agent.db.remove_push_subscription(body.endpoint)
+        return {"ok": True}
+
     @app.post("/chat/send")
     async def chat_send(body: ChatSend, authorization: Optional[str] = Header(None)):
         who = chat_user(authorization)
@@ -345,9 +383,20 @@ def create_app(agent, parser, secrets: ApiSecrets, clock=None, lock=None, schedu
             return {"run": run.id if run else None, "state": run.state.value if run else None,
                     "display": agent.fridge.display}
 
-    # ------------------------------------------------------------------ Swiggy OAuth redirect
-    # Only the redirect target. Starting the flow (register_client + build_authorize_url) is a
-    # one-off, run by hand once Builders Club access is approved -- see agent/oauth.py and DRYRUN.md.
+    # ------------------------------------------------------------------ Swiggy OAuth
+    # Dormant until Builders Club access is approved: oauth is only wired in when
+    # INSTAMART_BACKEND=real, and even then there is nothing for Swiggy to redirect to until the
+    # client is registered and allowlisted. Owner-only (fridge key) so a stranger with the URL
+    # cannot trigger dynamic client registration against the account.
+    @app.get("/auth/start")
+    def auth_start(x_fridge_key: Optional[str] = Header(None)):
+        fridge_auth(x_fridge_key)
+        if oauth is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if not oauth.client_id:
+            oauth.register_client()
+        return RedirectResponse(oauth.build_authorize_url())
+
     @app.get("/auth/callback")
     def auth_callback(code: str = Query(""), state: str = Query(""), error: str = Query("")):
         if oauth is None:

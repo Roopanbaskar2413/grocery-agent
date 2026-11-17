@@ -160,9 +160,14 @@ your actual free-tier limit is.
   with text nodes only, never HTML. A test fails if `chat.js` ever uses `innerHTML` or `eval`.
 - **Flood limit** of 20 messages per minute per person. Messages are stored in the database for 14 days.
 - **Phones and app users can coexist.** Recipients starting with `app:` go to the chat store, all others to WhatsApp.
-- **Not built:** push notifications (the page polls every 2 seconds while it is open), HTTPS (plain http is fine on
-  your own network only), and a native app. A native app can reuse the same four endpoints
-  (`/chat/send`, `/chat/tap`, `/chat/messages`, bearer token).
+- **Push notifications** (optional, `agent/push.py`): a Web Push subscription wakes up a closed chat tab. Set
+  `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (generate once with `pip install py-vapid && vapid --gen`) and
+  `VAPID_SUBJECT` (a `mailto:` address); without them the page still works, it just polls every 2 seconds while
+  open. Push is best-effort on top of that poll, never a replacement for it -- an expired subscription (404/410)
+  is dropped, anything else is logged and left for the next message.
+- **Not built:** HTTPS (plain http is fine on your own network only, the real deploy at DRYRUN.md uses Fly.io's
+  managed TLS instead) and a native app. A native app can reuse the same four endpoints (`/chat/send`,
+  `/chat/tap`, `/chat/messages`, bearer token).
 
 ## First real run (WhatsApp)
 See DRYRUN.md for the step by step, and `python3 dryrun.py` for the helper (env check, local check, push a list, watch the outbox).
@@ -190,4 +195,5 @@ run against the real API -- Builders Club access is pending, and `Settings.insta
 ## Not built yet (next milestones)
 exercising the real Instamart adapter against the live API (needs Builders Club access, requested separately),
 UPI payment polling (the MCP tools exist -- `check_payment_status`, `confirm_order` -- but the orchestrator's
-state machine only drives the COD path today), push notifications for the in-app chat, hosting, and a mobile app.
+state machine only drives the COD path today), and a mobile app (on hold for now; see the chat section above
+for the four endpoints a native app would reuse).

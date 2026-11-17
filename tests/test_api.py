@@ -301,11 +301,23 @@ class FakeOAuth:
     def __init__(self, fail=False):
         self.calls = []
         self.fail = fail
+        self.client_id = None
+        self.registered = 0
+        self.authorize_urls_built = 0
 
     def exchange_code(self, code, state):
         self.calls.append((code, state))
         if self.fail:
             raise RuntimeError("unknown or expired OAuth state")
+
+    def register_client(self):
+        self.registered += 1
+        self.client_id = "client-abc"
+        return self.client_id
+
+    def build_authorize_url(self, state=None):
+        self.authorize_urls_built += 1
+        return "https://mcp.swiggy.com/auth/authorize?client_id=client-abc"
 
 
 def make_app(tmp_path, oauth=None):
@@ -313,6 +325,30 @@ def make_app(tmp_path, oauth=None):
                   Settings(recipients={P1: "Roopan"}), Database(str(tmp_path / "o.db")))
     return TestClient(create_app(agent, RuleIntentParser(), SECRETS, clock=Clock(NOON),
                                  scheduler_interval=None, oauth=oauth))
+
+
+def test_auth_start_is_not_found_when_oauth_is_not_configured(tmp_path):
+    client = make_app(tmp_path, oauth=None)
+    r = client.get("/auth/start", headers={"X-Fridge-Key": "fridge-key"}, follow_redirects=False)
+    assert r.status_code == 404
+
+
+def test_auth_start_requires_the_fridge_key(tmp_path):
+    client = make_app(tmp_path, oauth=FakeOAuth())
+    assert client.get("/auth/start", follow_redirects=False).status_code == 401
+
+
+def test_auth_start_registers_once_and_redirects_to_the_authorize_url(tmp_path):
+    oauth = FakeOAuth()
+    client = make_app(tmp_path, oauth=oauth)
+    r1 = client.get("/auth/start", headers={"X-Fridge-Key": "fridge-key"}, follow_redirects=False)
+    assert r1.status_code in (302, 307)
+    assert r1.headers["location"] == "https://mcp.swiggy.com/auth/authorize?client_id=client-abc"
+    assert oauth.registered == 1
+
+    client.get("/auth/start", headers={"X-Fridge-Key": "fridge-key"}, follow_redirects=False)
+    assert oauth.registered == 1          # a second visit does not re-register the client
+    assert oauth.authorize_urls_built == 2
 
 
 def test_auth_callback_is_not_found_when_oauth_is_not_configured(tmp_path):
