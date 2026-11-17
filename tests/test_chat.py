@@ -86,6 +86,12 @@ def test_the_page_and_script_are_public_but_hold_no_secrets_and_set_a_strict_pol
         assert secret not in page.text and secret not in js.text
 
 
+def test_the_page_discloses_gemini_before_any_message_is_sent(rig):
+    page = rig.client.get("/chat")
+    assert "Messages are processed by Google Gemini." in page.text
+    assert page.text.index('id="notice"') < page.text.index('id="send"')
+
+
 def test_chat_script_never_renders_text_as_html():
     js = Path(__file__).resolve().parents[1].joinpath("agent", "static", "chat.js").read_text()
     for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
