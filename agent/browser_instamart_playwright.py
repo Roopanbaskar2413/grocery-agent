@@ -22,6 +22,7 @@ install chromium`), via a small script like:
         store = BrowserInstamart(PlaywrightInstamartPage(page, Selectors()))
         # ... call store.search_products(...), store.update_cart(...), store.get_cart(), etc.
 """
+import re
 from dataclasses import dataclass
 
 
@@ -43,9 +44,14 @@ class Selectors:
       variant_modal_add_button, variant_modal_confirm_button
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
-      card_name, card_size, card_price, card_out_of_stock, cart_line_item, cart_line_qty,
+      card_size, card_out_of_stock, cart_line_item, cart_line_qty,
       cart_subtotal, cart_delivery_fee, payment_cod_option, payment_upi_option,
       orders_page_url, order_row, order_id_in_row, variant_modal
+
+    card name and price have no selector at all -- their text divs only have hashed CSS classes
+    with no stable hook, so PlaywrightInstamartPage reads the name off the card's <img alt=...>
+    and the price via a ₹<digits> regex over the card's visible text instead (see _card_name /
+    _card_price below).
 
     checkout_button is deliberately left unset (TODO) -- the store was closed when last checked,
     so it never rendered. agent/browser_instamart.py never clicks it (checkout() always pauses
@@ -58,10 +64,8 @@ class Selectors:
     cart_button: str = '[data-testid="review-cart-button"]'
     cart_url: str = "https://www.instamart.in/cart"
 
-    search_result_card: str = 'a[href^="/p/"]'
-    card_name: str = "[data-testid='product-name']"
+    search_result_card: str = '[data-testid="item-collection-card-full"]'
     card_size: str = "[data-testid='product-size']"
-    card_price: str = "[data-testid='product-price']"
     card_out_of_stock: str = "[data-testid='product-sold-out']"
     card_add_button: str = '[data-testid="buttonpair-add"]'
 
@@ -113,22 +117,43 @@ class PlaywrightInstamartPage:
         cards = self.page.query_selector_all(self.sel.search_result_card)
         out = []
         for card in cards:
-            pid = card.get_attribute("href") or self._fallback_id(card)
-            name_el = card.query_selector(self.sel.card_name)
+            name = self._card_name(card)
+            price = self._card_price(card)
+            if name is None or price is None:
+                continue  # can't trust this card without both -- skip rather than guess
             size_el = card.query_selector(self.sel.card_size)
-            price_el = card.query_selector(self.sel.card_price)
             out_of_stock = card.query_selector(self.sel.card_out_of_stock) is not None
-            out.append({"id": pid, "name": (name_el.text_content() if name_el else "").strip(),
+            out.append({"id": self._card_id(card, name), "name": name,
                        "size": (size_el.text_content() if size_el else "").strip(),
-                       "price": _parse_rupees(price_el.text_content() if price_el else "0"),
-                       "in_stock": not out_of_stock})
+                       "price": price, "in_stock": not out_of_stock})
         return out
 
-    def _fallback_id(self, card) -> str:
-        """If a card has no href/data-product-id, fall back to a composite of whatever text is
-        visible. Less reliable across page reloads -- prefer a real id attribute where one exists."""
-        name_el = card.query_selector(self.sel.card_name)
-        size_el = card.query_selector(self.sel.card_size)
+    def _card_name(self, card) -> str | None:
+        """The card's name text div only has a hashed CSS class, no stable hook -- read the
+        product name off the <img>'s alt text instead (confirmed in DevTools to hold the full
+        name, e.g. "7 Up Zero Sugar soft Drink PET")."""
+        img = card.query_selector("img")
+        alt = img.get_attribute("alt") if img else None
+        return alt.strip() if alt else None
+
+    def _card_price(self, card) -> int | None:
+        """Same hashed-class problem as the name -- pull the first ₹<digits> out of the card's
+        visible text instead of a specific price-div selector."""
+        match = re.search(r"₹(\d+)", card.text_content() or "")
+        return int(match.group(1)) if match else None
+
+    def _card_id(self, card, name: str) -> str:
+        """Prefer a real product-page link if the card has one; fall back to the name text, which
+        is less reliable (two variants could share a name) but is all we have otherwise."""
+        link = card.query_selector('a[href^="/p/"]')
+        href = link.get_attribute("href") if link else None
+        return href or name
+
+    def _fallback_id(self, row) -> str:
+        """Cart-row id fallback when there's no data-product-id -- composite of visible name/size
+        text. cart_line_item markup is still unverified; revisit once you've inspected it."""
+        name_el = row.query_selector("[data-testid='product-name']")
+        size_el = row.query_selector(self.sel.card_size)
         return f"{(name_el.text_content() if name_el else '').strip()}::{(size_el.text_content() if size_el else '').strip()}"
 
     def cart_items(self) -> list[dict]:
@@ -174,8 +199,7 @@ class PlaywrightInstamartPage:
             )
         target_size_el = card.query_selector(self.sel.card_size)
         target_size = (target_size_el.text_content() if target_size_el else "").strip()
-        target_price_el = card.query_selector(self.sel.card_price)
-        target_price = _parse_rupees(target_price_el.text_content()) if target_price_el else None
+        target_price = self._card_price(card)
 
         row_buttons = modal.query_selector_all(self.sel.variant_modal_add_button)
         matched = None
@@ -226,7 +250,8 @@ class PlaywrightInstamartPage:
 
     def _find_card(self, product_id: str):
         for card in self.page.query_selector_all(self.sel.search_result_card):
-            if (card.get_attribute("href") or self._fallback_id(card)) == product_id:
+            name = self._card_name(card)
+            if name is not None and self._card_id(card, name) == product_id:
                 return card
         raise LookupError(f"product {product_id!r} not found on the current search results page")
 
