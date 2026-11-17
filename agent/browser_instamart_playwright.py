@@ -68,7 +68,7 @@ class Selectors:
     so it never rendered. agent/browser_instamart.py never clicks it (checkout() always pauses
     before placing an order), so leaving this None breaks nothing; fill it in whenever convenient.
     """
-    base_url: str = "https://www.swiggy.com/instamart"
+    base_url: str = "https://www.instamart.in"
     search_button: str = '[data-testid="search-container"]'
     search_input: str = 'form[data-testid="search-page-header-search-bar"] input[type="search"]'
     account_button: str = '[data-testid="user-account-button"]'
