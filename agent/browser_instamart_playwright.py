@@ -127,7 +127,15 @@ class PlaywrightInstamartPage:
         self.page.fill(self.sel.search_input, query)
         self.page.keyboard.press("Enter")
         self.page.wait_for_selector(self.sel.search_result_card, timeout=self.nav_timeout_ms)
+        # wait_for_selector resolving doesn't mean the result list has stopped re-rendering --
+        # seen it resolve on a transient card that's gone by the time we query again. Retry a
+        # few times rather than trusting a single immediate read.
         cards = self.page.query_selector_all(self.sel.search_result_card)
+        for _ in range(5):
+            if cards:
+                break
+            self.page.wait_for_timeout(300)
+            cards = self.page.query_selector_all(self.sel.search_result_card)
         out = []
         for card in cards:
             name = self._card_name(card)
