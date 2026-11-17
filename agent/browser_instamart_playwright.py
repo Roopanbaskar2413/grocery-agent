@@ -22,6 +22,7 @@ install chromium`), via a small script like:
         store = BrowserInstamart(PlaywrightInstamartPage(page, Selectors()))
         # ... call store.search_products(...), store.update_cart(...), store.get_cart(), etc.
 """
+import re
 from dataclasses import dataclass
 
 
@@ -253,14 +254,16 @@ class PlaywrightInstamartPage:
         return [r for r in rows if r.query_selector(self.sel.cart_line_name) is not None]
 
     def _row_price(self, row) -> int | None:
-        """Same pure-digit-leaf approach as the product card's price -- see _rupee_amounts. Excludes
-        cart_line_qty: a live run showed the quantity counter ("1") is itself a pure-digit leaf and
-        got picked up as the price, giving a ₹2 cart total for two ₹40+ items."""
-        amounts = self._rupee_amounts(row, self.sel.cart_line_qty)
-        live = [a["amount"] for a in amounts if not a["struck"]]
-        if live:
-            return live[0]
-        return amounts[0]["amount"] if amounts else None
+        """The pure-digit-leaf approach that works for the product card kept failing here -- two
+        different live runs both returned a wrong but identical value (first "1", then "2") for
+        two different products, which smelled like something shared leaking into both rows rather
+        than each row's own price. DevTools found something much better anyway: each cart row has
+        an aria-hidden accessibility span with the full sentence (e.g. "Arokya Full Cream Milk,
+        500 ml, quantity 1, price 43 rupees") -- textContent() picks it up regardless of the
+        aria-hidden attribute, so just regex the number straight out of that instead of hunting
+        leaf elements at all."""
+        match = re.search(r"price\s+(\d+)\s+rupees?", row.text_content() or "", re.IGNORECASE)
+        return int(match.group(1)) if match else None
 
     def cart_items(self) -> list[dict]:
         self.page.goto(self.sel.cart_url)
