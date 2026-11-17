@@ -96,7 +96,6 @@ class Selectors:
     cart_line_qty: str = '[data-testid="add_buttons_center"]'
     cart_line_qty_plus: str = '[data-testid="add_buttons_plus"]'
     cart_line_qty_minus: str = '[data-testid="add_buttons_minus"]'
-    cart_line_remove: str = "[data-testid='cart-item-remove']"
     cart_subtotal: str = "[data-testid='cart-subtotal']"
     cart_delivery_fee: str = "[data-testid='cart-delivery-fee']"
 
@@ -330,8 +329,14 @@ class PlaywrightInstamartPage:
             row.query_selector(button).click()
 
     def remove_item(self, product_id: str) -> None:
+        """No separate remove/delete button was found on a live run (cart_line_remove is an
+        unverified guess, and the real page has no element there) -- same quantity stepper as
+        set_quantity, decrementing to 0 removes the line instead."""
         row = self._find_row(product_id)
-        row.query_selector(self.sel.cart_line_remove).click()
+        current_el = row.query_selector(self.sel.cart_line_qty)
+        current = int((current_el.text_content() if current_el else "1").strip() or "1")
+        for _ in range(current):
+            row.query_selector(self.sel.cart_line_qty_minus).click()
 
     def _find_card(self, product_id: str):
         for card in self.page.query_selector_all(self.sel.search_result_card):
