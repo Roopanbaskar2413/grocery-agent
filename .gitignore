@@ -1,5 +1,7 @@
 .chat_tokens
 .swiggy_token
+.vapid_private.pem
+.vapid_public.pem
 *.db
 *.db-*
 __pycache__/
