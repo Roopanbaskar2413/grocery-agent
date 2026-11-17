@@ -305,8 +305,16 @@ class PlaywrightInstamartPage:
         card = self._find_card(product_id)
         card.query_selector(self.sel.card_add_button).click()
         self._handle_variant_modal_if_present(card)
+        # Wait for the card's own stepper to confirm the add before returning. A live run with
+        # several items added in a row (one search+add per item, each a full page navigation)
+        # silently lost most of them with no error -- the next item's navigation most likely
+        # canceled this add's network request before it reached the server.
+        try:
+            card.wait_for_selector(self.sel.card_qty_count, timeout=self.nav_timeout_ms)
+        except Exception:
+            pass
         for _ in range(qty - 1):
-            card.query_selector(self.sel.cart_line_qty_plus).click()
+            card.query_selector(self.sel.card_add_button).click()
 
     def _handle_variant_modal_if_present(self, card) -> None:
         """Some products open a pack-size picker modal instead of adding straight to the cart,
