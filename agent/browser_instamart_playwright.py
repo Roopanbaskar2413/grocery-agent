@@ -239,13 +239,15 @@ class PlaywrightInstamartPage:
         return name
 
     def _fallback_id(self, row) -> str:
-        """Cart-row id fallback when there's no data-product-id -- composite of the row's real
-        name/size testids. Note this id scheme isn't guaranteed to match whatever id a search-page
-        card produced for the same product -- mapping a search result to its cart row is a known
-        gap, not solved here (see README)."""
+        """Cart-row id -- just the name, same as _card_id. This MUST match the search card's id
+        scheme: update_cart() diffs `current` (built from this) against `wanted` (built from
+        _card_id) by exact key equality. A live run showed what happens when they don't match --
+        every item looked "not in current" and "not in wanted" at once, so update_cart removed
+        and immediately re-added everything on every single call instead of diffing incrementally,
+        which is suspected to have caused several items to go missing on a 4-item run (racing a
+        remove against a re-add instead of leaving an already-correct line untouched)."""
         name_el = row.query_selector(self.sel.cart_line_name)
-        size_el = row.query_selector(self.sel.cart_line_size)
-        return f"{(name_el.text_content() if name_el else '').strip()}::{(size_el.text_content() if size_el else '').strip()}"
+        return (name_el.text_content() if name_el else "").strip()
 
     def _cart_rows(self):
         """[role="listitem"] can match unrelated list items elsewhere on the page -- keep only the
