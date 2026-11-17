@@ -265,11 +265,17 @@ class PlaywrightInstamartPage:
     def cart_items(self) -> list[dict]:
         self.page.goto(self.sel.cart_url)
         self.page.wait_for_load_state("networkidle", timeout=self.nav_timeout_ms)
+        rows = self._cart_rows()
+        if self.debug:
+            print(f"    [debug] cart rows found: {len(rows)}")
         out = []
-        for row in self._cart_rows():
+        for row in rows:
             qty_el = row.query_selector(self.sel.cart_line_qty)
             qty = int((qty_el.text_content() if qty_el else "1").strip() or "1")
-            out.append({"id": self._fallback_id(row), "qty": qty})
+            fid = self._fallback_id(row)
+            if self.debug:
+                print(f"    [debug] cart row id={fid!r} qty={qty}")
+            out.append({"id": fid, "qty": qty})
         return out
 
     def cart_totals(self) -> dict:
@@ -278,7 +284,14 @@ class PlaywrightInstamartPage:
             subtotal = _parse_rupees(subtotal_el.text_content())
         else:
             # No confirmed subtotal selector yet -- fall back to summing each row's own price.
-            subtotal = sum(self._row_price(row) or 0 for row in self._cart_rows())
+            rows = self._cart_rows()
+            prices = []
+            for row in rows:
+                p = self._row_price(row)
+                if self.debug:
+                    print(f"    [debug] cart row price={p!r}")
+                prices.append(p or 0)
+            subtotal = sum(prices)
         fee_el = self.page.query_selector(self.sel.cart_delivery_fee)
         delivery_fee = _parse_rupees(fee_el.text_content()) if fee_el else 0
         return {"subtotal": subtotal, "delivery_fee": delivery_fee}
