@@ -22,7 +22,9 @@ install chromium`), via a small script like:
         store = BrowserInstamart(PlaywrightInstamartPage(page, Selectors()))
         # ... call store.search_products(...), store.update_cart(...), store.get_cart(), etc.
 """
+import os
 import re
+import time
 from dataclasses import dataclass
 
 
@@ -341,8 +343,29 @@ class PlaywrightInstamartPage:
         except Exception as e:
             if self.debug:
                 print(f"    [debug] add_item({product_id!r}): stepper never appeared ({e})")
+            self._capture_add_failure_diagnostics(card, product_id)
         for _ in range(qty - 1):
             card.query_selector(self.sel.card_add_button).click()
+
+    def _capture_add_failure_diagnostics(self, card, product_id: str) -> None:
+        """Two live runs both hit this exact timeout on the 3rd item added, after two prior adds
+        succeeded -- reproducible by cart position/state, not a bad product. Rather than keep
+        guessing (stale toast/drawer intercepting the click? button needing scroll-into-view that
+        worked on an empty cart but not a non-empty one?), capture what was actually on screen at
+        the moment of the timeout: the clicked card's own outerHTML and a full-page screenshot.
+        Best-effort -- a failure here must never mask the real timeout that triggered it."""
+        try:
+            out_dir = "./debug_captures"
+            os.makedirs(out_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            safe_name = "".join(c if c.isalnum() else "_" for c in product_id)[:60]
+            base = f"{out_dir}/add_timeout_{safe_name}_{stamp}"
+            with open(f"{base}.html", "w") as f:
+                f.write(card.evaluate("el => el.outerHTML"))
+            self.page.screenshot(path=f"{base}.png", full_page=True)
+            print(f"    [debug] timeout diagnostics saved: {base}.html / {base}.png")
+        except Exception as capture_error:
+            print(f"    [debug] failed to capture timeout diagnostics: {capture_error}")
 
     def _handle_variant_modal_if_present(self, card) -> None:
         """Some products open a pack-size picker modal instead of adding straight to the cart,

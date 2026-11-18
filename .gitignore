@@ -4,6 +4,7 @@
 .vapid_public.pem
 .env.funnel
 .instamart_browser_profile/
+debug_captures/
 *.db
 *.db-*
 __pycache__/
