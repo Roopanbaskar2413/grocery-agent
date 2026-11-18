@@ -550,7 +550,12 @@ class PlaywrightInstamartPage:
 
         Waits for address_row to actually render after opening the modal instead of checking for
         it with an instant query_selector -- the same render-delay race already fixed for the
-        variant-picker modal (see _handle_variant_modal_if_present)."""
+        variant-picker modal (see _handle_variant_modal_if_present). Also waits, after clicking a
+        matching row, for the cart footer to actually re-render into
+        cart_footer_make_payment_button before returning True -- a live run showed checkout()'s
+        immediate address_selected() re-check concluding the nickname didn't match, when the row
+        click had in fact landed and the footer just hadn't re-rendered yet. Same race-condition
+        class, same fix: a real wait_for_selector instead of an instant check."""
         cta = self.page.query_selector(self.sel.cart_footer_cta)
         if cta is not None:
             cta.click()
@@ -562,6 +567,12 @@ class PlaywrightInstamartPage:
             ann = row.query_selector(self.sel.address_row_annotation)
             if (ann.text_content() if ann else "").strip() == nickname:
                 row.click()
+                try:
+                    self.page.wait_for_selector(self.sel.cart_footer_make_payment_button,
+                                                timeout=self.nav_timeout_ms)
+                except Exception:
+                    pass  # best-effort -- checkout()'s own address_selected() re-check still
+                          # reflects reality either way, this just gives it time to land first
                 return True
         return False
 
