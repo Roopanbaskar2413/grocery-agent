@@ -362,10 +362,14 @@ class PlaywrightInstamartPage:
         matched.click()
         modal.query_selector(self.sel.variant_modal_confirm_button).click()
 
-    def _ancestor_text(self, element, levels: int = 4) -> str:
+    def _ancestor_text(self, element, levels: int = 6) -> str:
         """Text content of an element's nearest ancestor, climbing up to `levels` parents. Used to
         read a variant-picker row's visible size/price without a known row-container selector --
-        a heuristic, not a guarantee; raise the level if rows turn out to be nested deeper."""
+        a heuristic, not a guarantee. Live run: a 2-option modal for "Fresh Eggs White eggs"
+        matched neither row against price=122 at the previous level of 4 -- bumped to 6 on the
+        theory the row wrapper for this product's modal layout sits further up than 4 parents.
+        Unconfirmed against the live page; if it's still not matching, the real fix is a known
+        row-container selector instead of climbing further blindly."""
         node = element
         for _ in range(levels):
             parent_handle = node.evaluate_handle("el => el.parentElement")

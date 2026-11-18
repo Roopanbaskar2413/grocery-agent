@@ -185,17 +185,25 @@ class BrowserInstamart:
         check instead of reading the cart back immediately. But some products genuinely never
         land at all (seen live: a product whose add click produced no visible change within the
         timeout, every attempt) -- report that as a failed AddOutcome instead of raising, so one
-        bad product doesn't stop update_cart() from trying the rest of the list."""
+        bad product doesn't stop update_cart() from trying the rest of the list.
+
+        page.add_item() can also raise outright (seen live: VariantModalRequiresSelectors, when a
+        pack-size modal opens and nothing matches the target size/price) -- that's caught here
+        too, deliberately broad (any Exception, not an allowlist), because the whole point of this
+        method is that NO single product's failure, of any kind, is allowed to crash the batch."""
+        last_error = None
         for _ in range(ADD_ITEM_VERIFY_ATTEMPTS):
-            self.page.add_item(pid, qty)
+            try:
+                self.page.add_item(pid, qty)
+            except Exception as e:
+                last_error = str(e)
+                continue
             self._sleep(ADD_ITEM_VERIFY_GAP_SECONDS)
             current = {it["id"]: it["qty"] for it in self.page.cart_items()}
             if current.get(pid) == qty:
                 return AddOutcome(pid, qty, True)
-        return AddOutcome(
-            pid, qty, False,
-            reason=f"could not confirm it was added to the cart after {ADD_ITEM_VERIFY_ATTEMPTS} attempts"
-        )
+        reason = last_error or f"could not confirm it was added to the cart after {ADD_ITEM_VERIFY_ATTEMPTS} attempts"
+        return AddOutcome(pid, qty, False, reason=reason)
 
 
     def get_payment_options(self):

@@ -20,6 +20,7 @@ class FakeInstamartPage:
         self.calls = []
         self.add_item_noop_count = 0  # next N add_item calls look like they happened but don't stick
         self.add_item_fail_pids = set()  # these pids never stick, no matter how many attempts
+        self.add_item_exceptions = {}    # pid -> Exception instance, raised on every add_item call
 
     def search(self, query):
         self.calls.append(("search", query))
@@ -41,6 +42,8 @@ class FakeInstamartPage:
 
     def add_item(self, product_id, qty):
         self.calls.append(("add_item", product_id, qty))
+        if product_id in self.add_item_exceptions:
+            raise self.add_item_exceptions[product_id]
         if product_id in self.add_item_fail_pids:
             return  # looks like it happened (no error) but never touches self._cart
         if self.add_item_noop_count > 0:
@@ -170,6 +173,23 @@ def test_update_cart_continues_past_a_failed_add_and_reports_it_in_the_summary(s
     assert by_pid["p3"].ok is True
     # the flaky p1 didn't stop p2/p3 from actually landing in the cart
     assert page._cart == {"p2": 1, "p3": 2}
+
+
+def test_update_cart_survives_a_real_exception_during_add_not_just_a_timeout(store, page):
+    """Live run: page.add_item() raised VariantModalRequiresSelectors outright (a pack-size modal
+    with no matching option row) and it propagated all the way up through update_cart(), crashing
+    the whole batch -- the per-item handling only covered the 'add silently didn't stick' case,
+    not 'add_item() itself threw'. Any exception, not an allowlist of expected ones, must be
+    caught and turned into a failed AddOutcome instead."""
+    from agent.browser_instamart_playwright import VariantModalRequiresSelectors
+    page.add_item_exceptions = {"p1": VariantModalRequiresSelectors("no matching variant row")}
+    results = store.update_cart([("p1", 1), ("p2", 1)])
+
+    by_pid = {r.pid: r for r in results}
+    assert by_pid["p1"].ok is False
+    assert "no matching variant row" in by_pid["p1"].reason
+    assert by_pid["p2"].ok is True
+    assert page._cart == {"p2": 1}
 
 
 # ---------------------------------------------------------------- payment options / orders passthrough
