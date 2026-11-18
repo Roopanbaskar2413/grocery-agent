@@ -432,6 +432,8 @@ class PlaywrightInstamartPage:
                 f"variant_row_price == {target_price!r}. Not guessing which one to add."
             )
         matched_add_button.click()
+        if self.debug:
+            print(f"    [debug] variant modal: clicked add on row price={price_text!r}")
         # A diagnostic capture after a failed confirm showed the modal still open, the item total
         # still "0", and the row's own add button still reading "ADD" (untouched) -- the confirm
         # click had fired before the row click's React state update (item total, stepper) landed,
@@ -444,7 +446,34 @@ class PlaywrightInstamartPage:
             arg=self.sel.variant_modal_total_cost,
             timeout=5000,
         )
-        confirm.click()
+        if self.debug:
+            total_el = self.page.query_selector(self.sel.variant_modal_total_cost)
+            total_text = total_el.text_content() if total_el else None
+            print(f"    [debug] variant modal: total cost now reads {total_text!r}")
+        try:
+            confirm.click()
+        except Exception as e:
+            # React may have re-rendered the confirm bar once the total changed, making the
+            # `confirm` handle we grabbed earlier stale/detached -- print immediately rather than
+            # letting this surface later as an unrelated-looking failure further up the stack.
+            print(f"    [debug] variant modal: confirm.click() raised: {e}")
+            raise
+        if self.debug:
+            self._debug_screenshot("variant_modal_after_confirm")
+
+    def _debug_screenshot(self, label: str) -> None:
+        """Best-effort screenshot to ./debug_captures/, taken immediately at a specific point
+        rather than only after an outer timeout -- so we see the state right when something
+        happened, not 15 seconds later."""
+        try:
+            out_dir = "./debug_captures"
+            os.makedirs(out_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            path = f"{out_dir}/{label}_{stamp}.png"
+            self.page.screenshot(path=path, full_page=True)
+            print(f"    [debug] screenshot saved: {path}")
+        except Exception as capture_error:
+            print(f"    [debug] failed to capture screenshot: {capture_error}")
 
     def set_quantity(self, product_id: str, qty: int) -> None:
         row = self._find_row(product_id)
