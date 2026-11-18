@@ -47,8 +47,8 @@ class Selectors:
       search_button, search_input, account_button, cart_button, search_result_card,
       card_add_button, cart_line_qty_plus, cart_line_qty_minus, cart_url,
       variant_modal, variant_row, variant_row_price, variant_row_sold_out,
-      variant_modal_add_button, variant_modal_confirm_button, cart_footer_cta,
-      cart_footer_make_payment_button, cod_payment_option
+      variant_modal_add_button, variant_modal_confirm_button, variant_modal_total_cost,
+      cart_footer_cta, cart_footer_make_payment_button, cod_payment_option
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
       card_size, card_out_of_stock, cart_subtotal, cart_delivery_fee, payment_upi_option,
@@ -111,6 +111,7 @@ class Selectors:
     variant_row_sold_out: str = '[data-testid="sold-out"]'
     variant_modal_add_button: str = '[data-testid="add_buttons_center"]'
     variant_modal_confirm_button: str = '[data-testid="InstamartItemCustomizationWidget-cta"]'
+    variant_modal_total_cost: str = '[data-testid="ItemCustomization_total_cost"]'
 
     cart_line_item: str = '[role="listitem"]'
     cart_line_name: str = '[data-testid="cart-item-name"]'
@@ -431,6 +432,18 @@ class PlaywrightInstamartPage:
                 f"variant_row_price == {target_price!r}. Not guessing which one to add."
             )
         matched_add_button.click()
+        # A diagnostic capture after a failed confirm showed the modal still open, the item total
+        # still "0", and the row's own add button still reading "ADD" (untouched) -- the confirm
+        # click had fired before the row click's React state update (item total, stepper) landed,
+        # so it submitted with ₹0 and did nothing. Wait for the total to actually change first.
+        self.page.wait_for_function(
+            """(sel) => {
+                const el = document.querySelector(sel);
+                return el && el.textContent.trim() !== "0";
+            }""",
+            arg=self.sel.variant_modal_total_cost,
+            timeout=5000,
+        )
         confirm.click()
 
     def set_quantity(self, product_id: str, qty: int) -> None:
