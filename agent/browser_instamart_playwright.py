@@ -48,7 +48,8 @@ class Selectors:
       card_add_button, cart_line_qty_plus, cart_line_qty_minus, cart_url,
       variant_modal, variant_row, variant_row_price, variant_row_sold_out,
       variant_modal_add_button, variant_modal_confirm_button, variant_modal_total_cost,
-      cart_footer_cta, cart_footer_make_payment_button, cod_payment_option
+      cart_footer_cta, cart_footer_make_payment_button, cod_payment_option, address_row,
+      address_row_annotation
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
       card_size, card_out_of_stock, cart_subtotal, cart_delivery_fee, payment_upi_option,
@@ -74,14 +75,15 @@ class Selectors:
     _card_price below).
 
     Checkout flow, confirmed by hand walking through a real checkout: cart page -> pick a
-    delivery address (a modal with saved addresses -- we don't have a selector for picking one,
-    see go_to_payment below) -> cart_footer_make_payment_button appears (replacing
-    cart_footer_cta's "Select Address" label) -> clicking it navigates to /payment ->
-    cod_payment_option selects "Pay on Delivery". By design this agent only ever selects COD, never
-    cards/wallets/netbanking. There is no selector here, anywhere, for a final "Place Order"
-    confirm button on the COD flow -- unconfirmed, TODO, and deliberately never looked for:
-    agent/browser_instamart.py's checkout() always raises InstamartCheckoutPaused right after
-    cod_payment_option, before any point-of-no-return click could happen.
+    delivery address (cart_footer_cta opens a modal of saved addresses, each a clickable
+    address_row with its nickname in address_row_annotation -- see select_address) ->
+    cart_footer_make_payment_button appears (replacing cart_footer_cta's "Select Address" label)
+    -> clicking it navigates to /payment -> cod_payment_option selects "Pay on Delivery". By
+    design this agent only ever selects COD, never cards/wallets/netbanking. There is no selector
+    here, anywhere, for a final "Place Order" confirm button on the COD flow -- unconfirmed,
+    TODO, and deliberately never looked for: agent/browser_instamart.py's checkout() always
+    raises InstamartCheckoutPaused right after cod_payment_option, before any point-of-no-return
+    click could happen.
     """
     base_url: str = "https://www.instamart.in"
     search_button: str = '[data-testid="search-container"]'
@@ -126,6 +128,10 @@ class Selectors:
     # cart_footer_make_payment_button once one is -- clicking the latter goes to /payment.
     cart_footer_cta: str = '[data-testid="cart-generic-footer-button"]'
     cart_footer_make_payment_button: str = '[data-testid="CART_FOOTER_MAKE_PAYMENT"]'
+    # Address-picker modal: real markup from a saved full-page capture. Each saved address is one
+    # clickable container with its nickname (e.g. "Roopan home") in a nested annotation div.
+    address_row: str = '[data-testid="address-item-container"]'
+    address_row_annotation: str = '[data-testid="address-item-annotation"]'
     # "Pay on Delivery" on the /payment page -- the only payment option this agent ever selects.
     cod_payment_option: str = '[data-testid="pg_mo_cod_header"]'
 
@@ -531,9 +537,33 @@ class PlaywrightInstamartPage:
 
     def address_selected(self) -> bool:
         """The cart footer's CTA is cart_footer_cta ("Select Address") before an address is
-        chosen, and becomes cart_footer_make_payment_button once one is -- no selector exists for
-        picking one of the saved addresses ourselves, so this just reports which state we're in."""
+        chosen, and becomes cart_footer_make_payment_button once one is -- this just reports
+        which state we're in. Picking one is select_address()'s job."""
         return self.page.query_selector(self.sel.cart_footer_make_payment_button) is not None
+
+    def select_address(self, nickname: str) -> bool:
+        """Real markup, from a saved full-page capture: clicking cart_footer_cta opens a modal of
+        saved addresses, each a clickable address_row with its nickname (e.g. "Roopan home") in a
+        nested address_row_annotation. Clicking a row selects it and closes the modal. Returns
+        True if a row matching `nickname` was found and clicked, False if not -- never raises;
+        checkout() decides what a False means.
+
+        Waits for address_row to actually render after opening the modal instead of checking for
+        it with an instant query_selector -- the same render-delay race already fixed for the
+        variant-picker modal (see _handle_variant_modal_if_present)."""
+        cta = self.page.query_selector(self.sel.cart_footer_cta)
+        if cta is not None:
+            cta.click()
+        try:
+            self.page.wait_for_selector(self.sel.address_row, timeout=self.nav_timeout_ms)
+        except Exception:
+            return False
+        for row in self.page.query_selector_all(self.sel.address_row):
+            ann = row.query_selector(self.sel.address_row_annotation)
+            if (ann.text_content() if ann else "").strip() == nickname:
+                row.click()
+                return True
+        return False
 
     def go_to_payment(self) -> None:
         self.page.query_selector(self.sel.cart_footer_make_payment_button).click()

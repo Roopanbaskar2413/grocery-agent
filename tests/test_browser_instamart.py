@@ -22,6 +22,7 @@ class FakeInstamartPage:
         self.add_item_fail_pids = set()  # these pids never stick, no matter how many attempts
         self.add_item_exceptions = {}    # pid -> Exception instance, raised on every add_item call
         self._address_selected = True    # default True so existing checkout tests don't need to care
+        self._saved_address_nicknames = {"Roopan home"}  # select_address() succeeds for these
 
     def search(self, query):
         self.calls.append(("search", query))
@@ -67,6 +68,13 @@ class FakeInstamartPage:
     def address_selected(self):
         self.calls.append(("address_selected",))
         return self._address_selected
+
+    def select_address(self, nickname):
+        self.calls.append(("select_address", nickname))
+        if nickname in self._saved_address_nicknames:
+            self._address_selected = True
+            return True
+        return False
 
     def go_to_payment(self):
         self.calls.append(("go_to_payment",))
@@ -263,14 +271,28 @@ def test_checkout_raises_not_implemented_instead_of_pausing_when_real_orders_are
     assert ("select_cod",) in page.calls
 
 
-def test_checkout_stops_and_raises_if_no_address_is_selected(store, page):
-    """We have no selector for picking a saved address ourselves -- checkout() can only go past
-    the cart page automatically when one is already selected. If not, it must stop and say so
+def test_checkout_auto_selects_the_configured_address_nickname_when_none_is_chosen(store, page):
+    """checkout() tries select_address(self.address_nickname) itself before giving up -- it
+    should reach go_to_payment/select_cod once that succeeds, same as if an address had already
+    been selected."""
+    page._cart = {"p1": 5}
+    page._address_selected = False
+    with pytest.raises(InstamartCheckoutPaused):
+        store.checkout("COD")
+    assert ("select_address", "Roopan home") in page.calls
+    assert ("go_to_payment",) in page.calls
+    assert ("select_cod",) in page.calls
+
+
+def test_checkout_stops_and_raises_if_the_configured_nickname_matches_no_saved_address(store, page):
+    """If select_address() tries and still can't find a match, checkout() must stop and say so
     instead of guessing, and must never reach go_to_payment/select_cod."""
     page._cart = {"p1": 5}
     page._address_selected = False
+    page._saved_address_nicknames = set()  # nothing matches "Roopan home"
     with pytest.raises(InstamartPageError):
         store.checkout("COD")
+    assert ("select_address", "Roopan home") in page.calls
     assert ("go_to_payment",) not in page.calls
     assert ("select_cod",) not in page.calls
 

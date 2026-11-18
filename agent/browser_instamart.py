@@ -119,9 +119,12 @@ class InstamartPage(Protocol):
 
     def address_selected(self) -> bool:
         """-> True if a delivery address is already chosen on the cart page (the footer shows
-        "make payment" rather than "select address"). We have no selector for picking one of the
-        saved addresses ourselves, so checkout() can only proceed automatically when this is
-        already True; otherwise it stops and asks you to pick one by hand."""
+        "make payment" rather than "select address")."""
+
+    def select_address(self, nickname: str) -> bool:
+        """Opens the saved-address picker if needed and clicks the one whose nickname matches
+        `nickname` (e.g. "Roopan home"). -> True if a matching address was found and clicked,
+        False otherwise. Never raises; checkout() decides what a False means."""
 
     def go_to_payment(self) -> None:
         """Click the cart footer's "make payment" button, navigating to /payment. Only called
@@ -138,7 +141,8 @@ class InstamartPage(Protocol):
 # ---------------------------------------------------------------------- the adapter
 class BrowserInstamart:
     def __init__(self, page: InstamartPage, pace_seconds=(0.8, 2.2), sleep=time.sleep,
-                 random_fn=random.uniform, allow_real_orders: bool = False):
+                 random_fn=random.uniform, allow_real_orders: bool = False,
+                 address_nickname: str = "Roopan home"):
         self.page = page
         self.pace_seconds = pace_seconds
         self._sleep = sleep
@@ -149,6 +153,11 @@ class BrowserInstamart:
         # when instamart_backend == "browser") may set this True, and even then checkout() raises
         # InstamartPlaceOrderNotImplemented rather than guessing a final "place order" selector.
         self.allow_real_orders = allow_real_orders
+        # The saved-address nickname checkout() picks when none is already selected. Default is
+        # Roopan's own home address -- configurable since row order on the picker isn't guaranteed
+        # stable, so "just click the first one" would be a real address-mixup risk, not a guess
+        # worth taking.
+        self.address_nickname = address_nickname
 
     def _pace(self, action: str):
         """A small, randomised delay before every page-touching action, so a sequence of calls
@@ -246,13 +255,14 @@ class BrowserInstamart:
         is already selected, clicks through to /payment, and selects "Pay on Delivery" -- so what
         you're told to review is the actual confirmed-COD state, not just a re-checked cart total.
 
-        By design this agent only ever uses COD: never cards, wallets, or netbanking. There is no
-        selector anywhere in this codebase for picking a saved delivery address (checkout stops
-        and asks you to pick one by hand if none is already selected) or for a final "Place
-        Order" confirm button on the COD flow. If allow_real_orders is True (production wiring
-        only), checkout() reaches the point of needing that final click and raises
-        InstamartPlaceOrderNotImplemented instead of guessing a selector that was never confirmed
-        live -- see that exception's docstring."""
+        By design this agent only ever uses COD: never cards, wallets, or netbanking. If no
+        delivery address is already selected, checkout() now picks one itself -- the saved
+        address matching self.address_nickname -- rather than stopping immediately; it only
+        raises if that nickname doesn't match any saved address either. There is still no
+        selector anywhere in this codebase for a final "Place Order" confirm button on the COD
+        flow. If allow_real_orders is True (production wiring only), checkout() reaches the point
+        of needing that final click and raises InstamartPlaceOrderNotImplemented instead of
+        guessing a selector that was never confirmed live -- see that exception's docstring."""
         if payment != "COD":
             raise ValueError("only COD (pay on delivery) is supported by design")
         self._pace("checkout")
@@ -261,10 +271,13 @@ class BrowserInstamart:
             raise InstamartMinOrderError(
                 f"cart total ₹{cart.total} is below Instamart's ₹{MIN_ORDER_RUPEES} minimum order")
         if not self.page.address_selected():
-            raise InstamartPageError(
-                "no delivery address is selected on the cart page -- pick one yourself in the "
-                "browser (there's no selector here for choosing a saved address), then try again"
-            )
+            self.page.select_address(self.address_nickname)
+            if not self.page.address_selected():
+                raise InstamartPageError(
+                    f"no delivery address is selected, and no saved address matched the "
+                    f"configured nickname {self.address_nickname!r} -- pick one yourself in the "
+                    "browser, or update the configured nickname, then try again"
+                )
         self.page.go_to_payment()
         self.page.select_cod()
         if not self.allow_real_orders:
