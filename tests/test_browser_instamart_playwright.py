@@ -18,16 +18,30 @@ class FakeElement:
 
 
 class FakePage:
-    """query_selector returns whatever's registered for that selector string; wait_for_function
-    either returns normally or raises, controlled by `fail_wait`."""
+    """query_selector returns whatever's registered for that selector string. wait_for_selector
+    simulates a render delay: if `appears_after_wait` has an element queued for that selector and
+    it isn't registered yet, waiting "renders" it (puts it into `elements`) before returning;
+    otherwise raises if the selector is still absent. wait_for_function either returns normally
+    or raises, controlled by `fail_wait`."""
 
     def __init__(self, fail_wait: bool = False):
         self.elements = {}
+        self.appears_after_wait = {}
         self.fail_wait = fail_wait
         self.wait_calls = []
+        self.wait_for_selector_calls = []
 
     def query_selector(self, selector):
         return self.elements.get(selector)
+
+    def wait_for_selector(self, selector, timeout=None):
+        self.wait_for_selector_calls.append(selector)
+        if selector in self.elements:
+            return
+        if selector in self.appears_after_wait:
+            self.elements[selector] = self.appears_after_wait.pop(selector)
+            return
+        raise TimeoutError(f"simulated timeout waiting for {selector!r} to appear")
 
     def wait_for_function(self, expression, arg=None, timeout=None):
         self.wait_calls.append(arg)
@@ -40,7 +54,7 @@ def test_select_cod_raises_if_the_cod_row_is_not_found():
     adapter = PlaywrightInstamartPage(page, Selectors())
     with pytest.raises(InstamartPageError):
         adapter.select_cod()
-    assert page.wait_calls == []  # never even tried to wait -- nothing was clicked
+    assert page.wait_calls == []  # never even tried to wait for the tick -- nothing was clicked
 
 
 def test_select_cod_clicks_the_row_and_waits_for_the_tick_to_flip():
@@ -65,3 +79,18 @@ def test_select_cod_raises_if_the_tick_never_reports_aria_checked_true():
     with pytest.raises(InstamartPageError):
         adapter.select_cod()
     assert row.clicked == 1  # the click itself still happened, only the confirmation wait failed
+
+
+def test_select_cod_waits_for_a_row_that_renders_after_a_short_delay():
+    """go_to_payment() only waits for networkidle, which doesn't guarantee cod_payment_option has
+    rendered yet -- confirmed live, the row was real but appeared moments after an instant check
+    already gave up. select_cod() must not conclude "not found" just because the row wasn't there
+    on the very first look."""
+    sel = Selectors()
+    page = FakePage(fail_wait=False)
+    row = FakeElement()
+    page.appears_after_wait[sel.cod_payment_option] = row  # not in `elements` yet, renders mid-wait
+    adapter = PlaywrightInstamartPage(page, sel)
+    adapter.select_cod()  # must not raise
+    assert sel.cod_payment_option in page.wait_for_selector_calls
+    assert row.clicked == 1

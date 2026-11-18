@@ -596,11 +596,19 @@ class PlaywrightInstamartPage:
         render-delay race class as the variant-modal confirm and address-selection fixes earlier:
         a click landing doesn't mean the UI has caught up to it yet. Raises InstamartPageError if
         it never flips within the timeout -- checkout() must never proceed believing COD is
-        selected when it isn't."""
-        row = self.page.query_selector(self.sel.cod_payment_option)
-        if row is None:
+        selected when it isn't.
+
+        go_to_payment() only waits for networkidle, which doesn't guarantee cod_payment_option
+        has rendered yet -- a live run saw "not found" raised against an instant query_selector()
+        for a row that was real and appeared moments later. Same render-delay race class as the
+        variant modal, variant confirm, and address footer. Waits (real wait_for_selector, not an
+        instant check) before deciding the row is genuinely absent."""
+        try:
+            self.page.wait_for_selector(self.sel.cod_payment_option, timeout=5000)
+        except Exception:
             raise InstamartPageError(
                 "COD row (cod_payment_option) not found on the payment page -- can't select it")
+        row = self.page.query_selector(self.sel.cod_payment_option)
         row.click()
         try:
             self.page.wait_for_function(
