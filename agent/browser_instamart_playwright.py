@@ -46,6 +46,7 @@ class Selectors:
     Verified against the live site (confirmed in DevTools):
       search_button, search_input, account_button, cart_button, search_result_card,
       card_add_button, cart_line_qty_plus, cart_line_qty_minus, cart_url,
+      variant_modal, variant_row, variant_row_price, variant_row_sold_out,
       variant_modal_add_button, variant_modal_confirm_button, cart_footer_cta,
       cart_footer_make_payment_button, cod_payment_option
 
@@ -98,11 +99,16 @@ class Selectors:
     # page's add_buttons_center. Excluded from card price detection (see _card_price).
     card_qty_count: str = '[data-testid="buttonpair-count"]'
 
-    # Pack-size variant picker: appears instead of adding immediately, for some products.
-    # Both real. Detection (is the modal even open?) checks for variant_modal_add_button directly
-    # rather than a separate modal-container selector -- see _handle_variant_modal_if_present.
-    # Its testid repeats once per option row in the modal, so it's always scoped to a single
-    # matched row, never just the first one on the page.
+    # Pack-size variant picker: appears instead of adding immediately, for some products. Real
+    # markup, pulled from a saved full-page capture (not inferred): container, one row per option
+    # (each with its own price and an inert-until-clicked add button), and a confirm bar. Row
+    # buttons share add_buttons_center with the main cart's qty stepper, but NOT with
+    # card_add_button ("buttonpair-add") -- that testid only exists on the search card behind the
+    # modal, never inside it.
+    variant_modal: str = '[data-testid="InstamartItemCustomizationWidget"]'
+    variant_row: str = '[data-testid="variants-container"]'
+    variant_row_price: str = '[data-testid="variants-price"]'
+    variant_row_sold_out: str = '[data-testid="sold-out"]'
     variant_modal_add_button: str = '[data-testid="add_buttons_center"]'
     variant_modal_confirm_button: str = '[data-testid="InstamartItemCustomizationWidget-cta"]'
 
@@ -369,78 +375,63 @@ class PlaywrightInstamartPage:
             print(f"    [debug] failed to capture timeout diagnostics: {capture_error}")
 
     def _handle_variant_modal_if_present(self, card) -> None:
-        """Some products open a pack-size picker modal instead of adding straight to the cart,
-        offering several variant rows to choose from. variant_modal_add_button's testid repeats
-        once per row, so we can't just click the first match on the page -- we match rows by the
-        target product's size/price (read off the search card that was clicked) and only click
-        within that one row's scope. If nothing matches, raise rather than guess.
+        """Some products open a pack-size picker modal instead of adding straight to the cart.
+        Real markup, pulled from a saved full-page capture after a live timeout (not inferred):
+        a container (variant_modal), one variant_row per option -- each with its own
+        variant_row_price text and, for sold-out options, a visible variant_row_sold_out child --
+        and a confirm bar (variant_modal_confirm_button). A row's add_buttons_center is inert
+        (tabindex="-1") until clicked once; add_buttons_minus/plus only wake up after that, not
+        used here since we only ever want qty 1 from the modal.
 
-        Detection used to check a separate `variant_modal` selector ([role="dialog"], an
-        unverified guess) before even looking for the real add buttons -- a live run showed this
-        silently no-op on a product whose modal had multiple rows (1 ltr ₹300 4-pack vs. 1 ltr
-        ₹75 single, the one actually wanted) because that guess didn't match the real markup, so
-        add_item() went on to wait for a stepper that could never appear with the modal still
-        open. Detect by the real add-button testid itself instead -- it shouldn't exist on the
-        page unless this modal is actually open."""
-        row_buttons = self.page.query_selector_all(self.sel.variant_modal_add_button)
-        if not row_buttons:
+        Detection must use variant_modal, not variant_modal_add_button: that testid
+        (add_buttons_center) is shared with the main cart's own qty stepper, so checking for it
+        directly isn't a reliable "is the modal open" signal on its own -- variant_modal is.
+        Earlier attempts detected via a role="dialog" guess (wrong markup, silently never
+        triggered) and then via add_buttons_center alone (right data, wrong question) before this
+        real container selector was confirmed from an actual capture."""
+        modal = self.page.query_selector(self.sel.variant_modal)
+        if modal is None:
             return  # no modal opened -- card_add_button added straight to cart
-        if not self.sel.variant_modal_confirm_button:
+        if not self.sel.variant_row or not self.sel.variant_row_price or not self.sel.variant_modal_confirm_button:
             raise VariantModalRequiresSelectors(
-                "A variant-picker modal opened after clicking add-to-cart, but "
-                "Selectors.variant_modal_confirm_button isn't filled in yet. Inspect the modal in "
-                "DevTools and set it -- not guessing at it here on purpose."
+                "A variant-picker modal opened, but variant_row / variant_row_price / "
+                "variant_modal_confirm_button aren't all filled in yet. Not guessing at them."
             )
         confirm = self.page.query_selector(self.sel.variant_modal_confirm_button)
         if confirm is None:
             raise VariantModalRequiresSelectors(
-                f"A variant-picker modal opened with {len(row_buttons)} option row(s), but no "
-                "confirm button matched variant_modal_confirm_button. Not guessing -- check the "
-                "selector against the real modal markup."
+                "A variant-picker modal opened, but no confirm button matched "
+                "variant_modal_confirm_button. Not guessing -- check the selector against the "
+                "real modal markup."
             )
 
         container = self._card_container(card)
-        target_size_el = container.query_selector(self.sel.card_size)
-        target_size = (target_size_el.text_content() if target_size_el else "").strip()
         target_price = self._card_price(container)
+        if target_price is None:
+            raise VariantModalRequiresSelectors(
+                "A variant-picker modal opened, but couldn't read the target product's own price "
+                "off its search card to match a variant row against."
+            )
 
-        matched = None
-        for button in row_buttons:
-            row_text = self._ancestor_text(button)
-            if target_size and target_size not in row_text:
+        rows = modal.query_selector_all(self.sel.variant_row)
+        matched_add_button = None
+        for row in rows:
+            if row.query_selector(self.sel.variant_row_sold_out) is not None:
+                continue  # skip sold-out options, never guess a substitute
+            price_el = row.query_selector(self.sel.variant_row_price)
+            price_text = (price_el.text_content() if price_el else "").strip()
+            if price_text != str(target_price):
                 continue
-            if target_price is not None and str(target_price) not in row_text:
-                continue
-            matched = button
+            matched_add_button = row.query_selector(self.sel.variant_modal_add_button)
             break
 
-        if matched is None:
+        if matched_add_button is None:
             raise VariantModalRequiresSelectors(
-                f"A variant-picker modal opened with {len(row_buttons)} option row(s), but none "
-                f"matched the requested size={target_size!r} price={target_price!r}. Not "
-                "guessing which one to add -- check the match text, or that the modal's rows are "
-                "actually wrapped by an ancestor close enough to variant_modal_add_button for "
-                "_ancestor_text to pick it up."
+                f"A variant-picker modal opened with {len(rows)} row(s), but none (in stock) had "
+                f"variant_row_price == {target_price!r}. Not guessing which one to add."
             )
-        matched.click()
+        matched_add_button.click()
         confirm.click()
-
-    def _ancestor_text(self, element, levels: int = 6) -> str:
-        """Text content of an element's nearest ancestor, climbing up to `levels` parents. Used to
-        read a variant-picker row's visible size/price without a known row-container selector --
-        a heuristic, not a guarantee. Live run: a 2-option modal for "Fresh Eggs White eggs"
-        matched neither row against price=122 at the previous level of 4 -- bumped to 6 on the
-        theory the row wrapper for this product's modal layout sits further up than 4 parents.
-        Unconfirmed against the live page; if it's still not matching, the real fix is a known
-        row-container selector instead of climbing further blindly."""
-        node = element
-        for _ in range(levels):
-            parent_handle = node.evaluate_handle("el => el.parentElement")
-            parent = parent_handle.as_element()
-            if parent is None:
-                break
-            node = parent
-        return node.text_content() or ""
 
     def set_quantity(self, product_id: str, qty: int) -> None:
         row = self._find_row(product_id)
