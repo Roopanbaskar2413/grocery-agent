@@ -50,7 +50,8 @@ class Selectors:
       card_add_button, cart_line_qty_plus, cart_line_qty_minus, cart_url,
       variant_modal, variant_row, variant_row_price, variant_row_sold_out,
       variant_modal_add_button, variant_modal_confirm_button, variant_modal_total_cost,
-      cart_footer_cta, cart_footer_make_payment_button, cod_payment_option, cod_payment_tick,
+      cart_footer_cta, cart_footer_make_payment_button, payment_method_cod_category,
+      cod_payment_option, cod_payment_tick,
       address_row, address_row_annotation
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
@@ -134,11 +135,16 @@ class Selectors:
     # clickable container with its nickname (e.g. "Roopan home") in a nested annotation div.
     address_row: str = '[data-testid="address-item-container"]'
     address_row_annotation: str = '[data-testid="address-item-annotation"]'
-    # "Pay on Delivery" on the /payment page -- the only payment option this agent ever selects.
-    # Confirmed via live DevTools: the clickable element is the role="button" div matched by its
-    # aria-label text, NOT the pm_cod_name container around it -- that container isn't itself
-    # clickable. Matched by aria-label text rather than its styled-components class (e.g.
-    # "sc-eWHaVC eAbmsE"), which is generated and won't survive a rebuild.
+    # Two separate pages, confirmed via live DevTools. go_to_payment() lands on the Payment
+    # Options LIST page first, where COD is a collapsed category row; clicking it navigates to a
+    # "Pay on delivery" sub-page holding the single COD confirm row. Both matched by aria-label
+    # text rather than their styled-components classes (e.g. "sc-eWHaVC eAbmsE"), which are
+    # generated and won't survive a rebuild. pg_mo_cod_header's inner div is text only, not
+    # clickable -- the role="button" wrapper is.
+    payment_method_cod_category: str = 'div[role="button"][aria-label="Pay on Delivery. Pay in cash or pay online."]'
+    # "Pay on Delivery" confirm row on the COD sub-page -- the only payment option this agent
+    # ever selects. The clickable element is the role="button" div matched by its aria-label
+    # text, NOT the pm_cod_name container around it -- that container isn't itself clickable.
     cod_payment_option: str = 'div[role="button"][aria-label="Cash Pay cash at the time of delivery."]'
     # Selected-state indicator: aria-checked flips from "false" to "true" once COD is actually
     # selected -- see select_cod(), which waits for this rather than trusting the click alone.
@@ -589,27 +595,31 @@ class PlaywrightInstamartPage:
         self.page.query_selector(self.sel.cart_footer_make_payment_button).click()
         self.page.wait_for_load_state("networkidle", timeout=self.nav_timeout_ms)
 
-    def select_cod(self) -> None:
-        """Clicks the real clickable COD row (cod_payment_option), then waits -- via
-        wait_for_function, not an instant check -- for the selected-state indicator
-        (cod_payment_tick) to actually report aria-checked="true" before returning. Same
-        render-delay race class as the variant-modal confirm and address-selection fixes earlier:
-        a click landing doesn't mean the UI has caught up to it yet. Raises InstamartPageError if
-        it never flips within the timeout -- checkout() must never proceed believing COD is
-        selected when it isn't.
-
-        go_to_payment() only waits for networkidle, which doesn't guarantee cod_payment_option
-        has rendered yet -- a live run saw "not found" raised against an instant query_selector()
-        for a row that was real and appeared moments later. Same render-delay race class as the
-        variant modal, variant confirm, and address footer. Waits (real wait_for_selector, not an
-        instant check) before deciding the row is genuinely absent."""
+    def _wait_and_click(self, selector: str, not_found_message: str) -> None:
+        """Wait for `selector` to actually render (real wait_for_selector, not an instant
+        query_selector check), then click it. Raises InstamartPageError with `not_found_message`
+        if it never appears."""
         try:
-            self.page.wait_for_selector(self.sel.cod_payment_option, timeout=5000)
+            self.page.wait_for_selector(selector, timeout=5000)
         except Exception:
-            raise InstamartPageError(
-                "COD row (cod_payment_option) not found on the payment page -- can't select it")
-        row = self.page.query_selector(self.sel.cod_payment_option)
-        row.click()
+            raise InstamartPageError(not_found_message)
+        self.page.query_selector(selector).click()
+
+    def select_cod(self) -> None:
+        """Two separate pages, confirmed via live DevTools: go_to_payment() lands on the Payment
+        Options LIST page, where COD is a collapsed category row (payment_method_cod_category) --
+        clicking it navigates to a "Pay on delivery" sub-page holding the single COD confirm row
+        (cod_payment_option). Waits for each element to actually render before clicking it (real
+        wait_for_selector, not an instant check -- the same render-delay race class as the
+        variant modal, variant confirm, and address footer fixed earlier this session), then
+        waits -- via wait_for_function -- for the selected-state indicator (cod_payment_tick) to
+        actually report aria-checked="true" before returning. Raises InstamartPageError if any
+        step's element never appears, or if the tick never flips -- checkout() must never proceed
+        believing COD is selected when it isn't."""
+        self._wait_and_click(self.sel.payment_method_cod_category,
+                             "COD category row (payment_method_cod_category) not found on the payment options page")
+        self._wait_and_click(self.sel.cod_payment_option,
+                             "COD row (cod_payment_option) not found on the payment page -- can't select it")
         try:
             self.page.wait_for_function(
                 """(sel) => {

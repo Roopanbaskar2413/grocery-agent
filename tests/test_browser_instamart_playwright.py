@@ -1,8 +1,9 @@
 """agent/browser_instamart_playwright.py normally holds real, unverified-against-the-live-site
-selectors and isn't unit tested (see its module docstring) -- but select_cod()'s wait-for-
-aria-checked logic is plain Python control flow, independent of any real selector, so it's worth
-covering with a minimal hand-rolled double for Playwright's Page/ElementHandle API. No real
-browser or Playwright package needed (this module is duck-typed on purpose)."""
+selectors and isn't unit tested (see its module docstring) -- but select_cod()'s two-step
+wait-and-click sequence plus wait-for-aria-checked logic is plain Python control flow,
+independent of any real selector, so it's worth covering with a minimal hand-rolled double for
+Playwright's Page/ElementHandle API. No real browser or Playwright package needed (this module is
+duck-typed on purpose)."""
 import pytest
 
 from agent.browser_instamart import InstamartPageError
@@ -49,22 +50,57 @@ class FakePage:
             raise TimeoutError(f"simulated timeout waiting on {arg!r}")
 
 
-def test_select_cod_raises_if_the_cod_row_is_not_found():
+def make_adapter(page, sel=None):
+    return PlaywrightInstamartPage(page, sel or Selectors())
+
+
+def put_both_pages_in_place(page, sel):
+    """The common "everything renders instantly" setup: both the Payment Options list page's
+    COD category row and the COD sub-page's confirm row already present."""
+    category_row = FakeElement()
+    confirm_row = FakeElement()
+    page.elements[sel.payment_method_cod_category] = category_row
+    page.elements[sel.cod_payment_option] = confirm_row
+    return category_row, confirm_row
+
+
+def test_select_cod_raises_if_the_category_row_is_not_found():
+    """go_to_payment() lands on the Payment Options LIST page first -- if even the COD category
+    row never appears there, select_cod() must stop before ever touching the sub-page."""
+    sel = Selectors()
     page = FakePage()
-    adapter = PlaywrightInstamartPage(page, Selectors())
+    adapter = make_adapter(page, sel)
     with pytest.raises(InstamartPageError):
         adapter.select_cod()
-    assert page.wait_calls == []  # never even tried to wait for the tick -- nothing was clicked
+    assert sel.cod_payment_option not in page.wait_for_selector_calls  # never got to step 2
+    assert page.wait_calls == []  # never got to the tick wait either
 
 
-def test_select_cod_clicks_the_row_and_waits_for_the_tick_to_flip():
+def test_select_cod_raises_if_the_confirm_row_is_not_found_after_the_category_click():
+    """The category row exists and gets clicked, but the sub-page's confirm row never shows up."""
+    sel = Selectors()
+    page = FakePage()
+    category_row = FakeElement()
+    page.elements[sel.payment_method_cod_category] = category_row
+    adapter = make_adapter(page, sel)
+    with pytest.raises(InstamartPageError):
+        adapter.select_cod()
+    assert category_row.clicked == 1  # step 1 did happen
+    assert page.wait_calls == []      # never reached the tick wait
+
+
+def test_select_cod_clicks_both_rows_in_order_then_waits_for_the_tick_to_flip():
     sel = Selectors()
     page = FakePage(fail_wait=False)
-    row = FakeElement()
-    page.elements[sel.cod_payment_option] = row
-    adapter = PlaywrightInstamartPage(page, sel)
+    category_row, confirm_row = put_both_pages_in_place(page, sel)
+    adapter = make_adapter(page, sel)
     adapter.select_cod()  # must not raise
-    assert row.clicked == 1
+    assert category_row.clicked == 1
+    assert confirm_row.clicked == 1
+    # category row must be waited for/clicked before the confirm row (it's on a different page
+    # reached only by clicking the category row first)
+    assert (page.wait_for_selector_calls.index(sel.payment_method_cod_category)
+           < page.wait_for_selector_calls.index(sel.cod_payment_option))
     assert page.wait_calls == [sel.cod_payment_tick]
 
 
@@ -73,24 +109,33 @@ def test_select_cod_raises_if_the_tick_never_reports_aria_checked_true():
     select_cod() must not let checkout() proceed believing COD is selected when it isn't."""
     sel = Selectors()
     page = FakePage(fail_wait=True)
-    row = FakeElement()
-    page.elements[sel.cod_payment_option] = row
-    adapter = PlaywrightInstamartPage(page, sel)
+    category_row, confirm_row = put_both_pages_in_place(page, sel)
+    adapter = make_adapter(page, sel)
     with pytest.raises(InstamartPageError):
         adapter.select_cod()
-    assert row.clicked == 1  # the click itself still happened, only the confirmation wait failed
+    assert category_row.clicked == 1 and confirm_row.clicked == 1  # both clicks still happened
 
 
-def test_select_cod_waits_for_a_row_that_renders_after_a_short_delay():
-    """go_to_payment() only waits for networkidle, which doesn't guarantee cod_payment_option has
-    rendered yet -- confirmed live, the row was real but appeared moments after an instant check
-    already gave up. select_cod() must not conclude "not found" just because the row wasn't there
-    on the very first look."""
+def test_select_cod_waits_for_the_category_row_to_render_after_a_short_delay():
+    """go_to_payment() only waits for networkidle, which doesn't guarantee
+    payment_method_cod_category has rendered yet -- confirmed live, the row was real but appeared
+    moments after an instant check already gave up."""
     sel = Selectors()
     page = FakePage(fail_wait=False)
-    row = FakeElement()
-    page.appears_after_wait[sel.cod_payment_option] = row  # not in `elements` yet, renders mid-wait
-    adapter = PlaywrightInstamartPage(page, sel)
+    page.appears_after_wait[sel.payment_method_cod_category] = FakeElement()
+    page.elements[sel.cod_payment_option] = FakeElement()
+    adapter = make_adapter(page, sel)
+    adapter.select_cod()  # must not raise
+    assert sel.payment_method_cod_category in page.wait_for_selector_calls
+
+
+def test_select_cod_waits_for_the_confirm_row_to_render_after_a_short_delay():
+    """Same render-delay race on the second page: the COD sub-page's confirm row doesn't have to
+    be present the instant navigation lands either."""
+    sel = Selectors()
+    page = FakePage(fail_wait=False)
+    page.elements[sel.payment_method_cod_category] = FakeElement()
+    page.appears_after_wait[sel.cod_payment_option] = FakeElement()
+    adapter = make_adapter(page, sel)
     adapter.select_cod()  # must not raise
     assert sel.cod_payment_option in page.wait_for_selector_calls
-    assert row.clicked == 1
