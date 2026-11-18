@@ -108,6 +108,20 @@ class InstamartPage(Protocol):
     def payment_options(self) -> list[str]:
         """-> normalized subset of ["COD", "UPI"], read from the checkout review page."""
 
+    def address_selected(self) -> bool:
+        """-> True if a delivery address is already chosen on the cart page (the footer shows
+        "make payment" rather than "select address"). We have no selector for picking one of the
+        saved addresses ourselves, so checkout() can only proceed automatically when this is
+        already True; otherwise it stops and asks you to pick one by hand."""
+
+    def go_to_payment(self) -> None:
+        """Click the cart footer's "make payment" button, navigating to /payment. Only called
+        after address_selected() is True."""
+
+    def select_cod(self) -> None:
+        """Select "Pay on Delivery" on the /payment page -- the only payment method this agent
+        ever selects, by design. Never clicks anything past this."""
+
     def orders(self) -> list[dict]:
         """-> [{"id": str, ...}, ...] from the order-history page, most recent last."""
 
@@ -212,13 +226,29 @@ class BrowserInstamart:
 
     def checkout(self, payment: str) -> str:
         """Always raises InstamartCheckoutPaused. See the module docstring for why. Still does the
-        real safety work first: a fresh, stability-checked price/stock read and the minimum-order
-        guard, so whatever you're told to review is current, not stale."""
+        real safety work first: a fresh, stability-checked price/stock read, the minimum-order
+        guard, and -- now that the real checkout flow is confirmed -- navigates as far as
+        selecting "Pay on Delivery" on the real /payment page, so what you're told to review is
+        the actual confirmed-COD state, not just a re-checked cart total.
+
+        By design this agent only ever uses COD: never cards, wallets, or netbanking. There is no
+        selector anywhere in this codebase for picking a saved delivery address or for a final
+        "Place Order" confirm button on the COD flow -- both are deliberately never looked for, so
+        there is nothing past cod_payment_option this method could even try to click."""
+        if payment != "COD":
+            raise ValueError("only COD (pay on delivery) is supported by design")
         self._pace("checkout")
         cart = self._stable_cart()
         if cart.total < MIN_ORDER_RUPEES:
             raise InstamartMinOrderError(
                 f"cart total ₹{cart.total} is below Instamart's ₹{MIN_ORDER_RUPEES} minimum order")
+        if not self.page.address_selected():
+            raise InstamartPageError(
+                "no delivery address is selected on the cart page -- pick one yourself in the "
+                "browser (there's no selector here for choosing a saved address), then try again"
+            )
+        self.page.go_to_payment()
+        self.page.select_cod()
         raise InstamartCheckoutPaused(cart, payment)
 
     def _stable_cart(self) -> CartView:

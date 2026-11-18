@@ -44,11 +44,12 @@ class Selectors:
     Verified against the live site (confirmed in DevTools):
       search_button, search_input, account_button, cart_button, search_result_card,
       card_add_button, cart_line_qty_plus, cart_line_qty_minus, cart_url,
-      variant_modal_add_button, variant_modal_confirm_button
+      variant_modal_add_button, variant_modal_confirm_button, cart_footer_cta,
+      cart_footer_make_payment_button, cod_payment_option
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
-      card_size, card_out_of_stock, cart_subtotal, cart_delivery_fee, payment_cod_option,
-      payment_upi_option, orders_page_url, order_row, order_id_in_row, variant_modal
+      card_size, card_out_of_stock, cart_subtotal, cart_delivery_fee, payment_upi_option,
+      orders_page_url, order_row, order_id_in_row, variant_modal
 
     cart_line_item ([role="listitem"]) is a real attribute but a loose one -- it may also match
     unrelated list items elsewhere on the page (e.g. a "did you forget?" carousel). We filter to
@@ -58,18 +59,26 @@ class Selectors:
     cart row price has no selector at all (same hashed-class problem as the product card) -- read
     via a ₹<digits> regex over the row's own text instead, taking the LAST match so a
     struck-through original price doesn't win over the real discounted one (see _row_price).
-    cart_subtotal has no confirmed selector yet either, so cart_totals() falls back to summing
-    each row's own price when it's missing -- self-consistent, but unverified against a real
-    subtotal line (the "store unserviceable" banner was hiding it when last checked).
+    cart_subtotal has no confirmed selector either, but cart_totals() doesn't need it: DevTools
+    found a hidden accessibility <p> on the cart page with a sentence like "Cart total is 116.0
+    Rupees" (same pattern as the per-row CART_ITEM_SUMMARY sentence), so the total is regexed out
+    of the page's own text (see _cart_total_from_summary) instead of needing a selector at all.
+    cart_subtotal/row-summing stay as a fallback if that sentence is ever missing.
 
     card name and price have no selector at all -- their text divs only have hashed CSS classes
     with no stable hook, so PlaywrightInstamartPage reads the name off the card's <img alt=...>
     and the price via a ₹<digits> regex over the card's visible text instead (see _card_name /
     _card_price below).
 
-    checkout_button is deliberately left unset (TODO) -- the store was closed when last checked,
-    so it never rendered. agent/browser_instamart.py never clicks it (checkout() always pauses
-    before placing an order), so leaving this None breaks nothing; fill it in whenever convenient.
+    Checkout flow, confirmed by hand walking through a real checkout: cart page -> pick a
+    delivery address (a modal with saved addresses -- we don't have a selector for picking one,
+    see go_to_payment below) -> cart_footer_make_payment_button appears (replacing
+    cart_footer_cta's "Select Address" label) -> clicking it navigates to /payment ->
+    cod_payment_option selects "Pay on Delivery". By design this agent only ever selects COD, never
+    cards/wallets/netbanking. There is no selector here, anywhere, for a final "Place Order"
+    confirm button on the COD flow -- unconfirmed, TODO, and deliberately never looked for:
+    agent/browser_instamart.py's checkout() always raises InstamartCheckoutPaused right after
+    cod_payment_option, before any point-of-no-return click could happen.
     """
     base_url: str = "https://www.instamart.in"
     search_button: str = '[data-testid="search-container"]'
@@ -104,9 +113,13 @@ class Selectors:
     cart_subtotal: str = "[data-testid='cart-subtotal']"
     cart_delivery_fee: str = "[data-testid='cart-delivery-fee']"
 
-    checkout_button: str = None  # TODO: unset -- store was closed when last inspected.
+    # Cart footer CTA: "Select Address" before an address is picked, becomes
+    # cart_footer_make_payment_button once one is -- clicking the latter goes to /payment.
+    cart_footer_cta: str = '[data-testid="cart-generic-footer-button"]'
+    cart_footer_make_payment_button: str = '[data-testid="CART_FOOTER_MAKE_PAYMENT"]'
+    # "Pay on Delivery" on the /payment page -- the only payment option this agent ever selects.
+    cod_payment_option: str = '[data-testid="pg_mo_cod_header"]'
 
-    payment_cod_option: str = "[data-testid='payment-cod']"
     payment_upi_option: str = "[data-testid='payment-upi']"
 
     orders_page_url: str = "https://www.swiggy.com/instamart/orders"
@@ -284,22 +297,34 @@ class PlaywrightInstamartPage:
         return out
 
     def cart_totals(self) -> dict:
-        subtotal_el = self.page.query_selector(self.sel.cart_subtotal)
-        if subtotal_el is not None:
-            subtotal = _parse_rupees(subtotal_el.text_content())
+        summary_total = self._cart_total_from_summary()
+        if summary_total is not None:
+            subtotal = summary_total
         else:
-            # No confirmed subtotal selector yet -- fall back to summing each row's own price.
-            rows = self._cart_rows()
-            prices = []
-            for row in rows:
-                p = self._row_price(row)
-                if self.debug:
-                    print(f"    [debug] cart row price={p!r}")
-                prices.append(p or 0)
-            subtotal = sum(prices)
+            subtotal_el = self.page.query_selector(self.sel.cart_subtotal)
+            if subtotal_el is not None:
+                subtotal = _parse_rupees(subtotal_el.text_content())
+            else:
+                # No confirmed subtotal selector either -- fall back to summing each row's price.
+                rows = self._cart_rows()
+                prices = []
+                for row in rows:
+                    p = self._row_price(row)
+                    if self.debug:
+                        print(f"    [debug] cart row price={p!r}")
+                    prices.append(p or 0)
+                subtotal = sum(prices)
         fee_el = self.page.query_selector(self.sel.cart_delivery_fee)
         delivery_fee = _parse_rupees(fee_el.text_content()) if fee_el else 0
         return {"subtotal": subtotal, "delivery_fee": delivery_fee}
+
+    def _cart_total_from_summary(self) -> int | None:
+        """DevTools found a hidden accessibility <p> on the cart page with a sentence like
+        "Cart total is 116.0 Rupees" -- same pattern as the per-row accessibility span used for
+        _row_price. Regex it straight out of the page's own content instead of needing a
+        selector for it at all."""
+        match = re.search(r"Cart total is\s+([\d.]+)\s+Rupees", self.page.content(), re.IGNORECASE)
+        return int(float(match.group(1))) if match else None
 
     def add_item(self, product_id: str, qty: int) -> None:
         card = self._find_card(product_id)
@@ -415,11 +440,24 @@ class PlaywrightInstamartPage:
 
     def payment_options(self) -> list[str]:
         methods = []
-        if self.page.query_selector(self.sel.payment_cod_option):
+        if self.page.query_selector(self.sel.cod_payment_option):
             methods.append("COD")
         if self.page.query_selector(self.sel.payment_upi_option):
             methods.append("UPI")
         return methods
+
+    def address_selected(self) -> bool:
+        """The cart footer's CTA is cart_footer_cta ("Select Address") before an address is
+        chosen, and becomes cart_footer_make_payment_button once one is -- no selector exists for
+        picking one of the saved addresses ourselves, so this just reports which state we're in."""
+        return self.page.query_selector(self.sel.cart_footer_make_payment_button) is not None
+
+    def go_to_payment(self) -> None:
+        self.page.query_selector(self.sel.cart_footer_make_payment_button).click()
+        self.page.wait_for_load_state("networkidle", timeout=self.nav_timeout_ms)
+
+    def select_cod(self) -> None:
+        self.page.query_selector(self.sel.cod_payment_option).click()
 
     def orders(self) -> list[dict]:
         self.page.goto(self.sel.orders_page_url)

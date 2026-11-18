@@ -21,6 +21,7 @@ class FakeInstamartPage:
         self.add_item_noop_count = 0  # next N add_item calls look like they happened but don't stick
         self.add_item_fail_pids = set()  # these pids never stick, no matter how many attempts
         self.add_item_exceptions = {}    # pid -> Exception instance, raised on every add_item call
+        self._address_selected = True    # default True so existing checkout tests don't need to care
 
     def search(self, query):
         self.calls.append(("search", query))
@@ -62,6 +63,16 @@ class FakeInstamartPage:
     def payment_options(self):
         self.calls.append(("payment_options",))
         return list(self._payment_options)
+
+    def address_selected(self):
+        self.calls.append(("address_selected",))
+        return self._address_selected
+
+    def go_to_payment(self):
+        self.calls.append(("go_to_payment",))
+
+    def select_cod(self):
+        self.calls.append(("select_cod",))
 
     def orders(self):
         self.calls.append(("orders",))
@@ -217,6 +228,37 @@ def test_checkout_below_minimum_order_raises_before_pausing(store, page):
     page._cart = {"p1": 1}        # 34, below the 99 minimum
     with pytest.raises(InstamartMinOrderError):
         store.checkout("COD")
+
+
+def test_checkout_rejects_anything_other_than_cod(store, page):
+    page._cart = {"p1": 5}
+    with pytest.raises(ValueError):
+        store.checkout("UPI")
+    # never even touched the page -- the COD-only check comes before any real work
+    assert ("address_selected",) not in page.calls
+
+
+def test_checkout_navigates_to_payment_and_selects_cod_before_pausing(store, page):
+    page._cart = {"p1": 5}
+    with pytest.raises(InstamartCheckoutPaused):
+        store.checkout("COD")
+    assert ("address_selected",) in page.calls
+    assert ("go_to_payment",) in page.calls
+    assert ("select_cod",) in page.calls
+    # go_to_payment must happen before select_cod, not the other way round
+    assert page.calls.index(("go_to_payment",)) < page.calls.index(("select_cod",))
+
+
+def test_checkout_stops_and_raises_if_no_address_is_selected(store, page):
+    """We have no selector for picking a saved address ourselves -- checkout() can only go past
+    the cart page automatically when one is already selected. If not, it must stop and say so
+    instead of guessing, and must never reach go_to_payment/select_cod."""
+    page._cart = {"p1": 5}
+    page._address_selected = False
+    with pytest.raises(InstamartPageError):
+        store.checkout("COD")
+    assert ("go_to_payment",) not in page.calls
+    assert ("select_cod",) not in page.calls
 
 
 def test_the_page_protocol_has_no_place_order_style_method():

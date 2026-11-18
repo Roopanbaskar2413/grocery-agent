@@ -201,8 +201,13 @@ it is a tool you run yourself with `browser_pipeline_check.py`, not a third prod
 
 Deliberate, permanent safety choice, not a gap to fill in later: `checkout()` here never clicks the final
 "place order" button. It re-reads price and stock (retrying until two consecutive reads agree, to ride out
-page-load delays) and raises `InstamartCheckoutPaused` with the reconciled cart every single time, so a
-human decides whether to place it in the still-open browser tab. Reasons:
+page-load delays), checks the ₹99 minimum, and -- now that the real flow has been walked through by hand --
+navigates as far as confirming an address is selected, clicking through to `/payment`, and selecting "Pay on
+Delivery" (the only payment method this agent ever picks; never cards, wallets, or netbanking). It then
+raises `InstamartCheckoutPaused` with the reconciled cart every single time, so a human decides whether to
+place it in the still-open browser tab. There is no selector anywhere in this codebase for picking a saved
+delivery address (checkout stops and tells you to pick one by hand if none is already selected) or for a
+final "Place Order" confirm button on the COD flow -- both are deliberately never looked for. Reasons:
 - checkout is the one action with real account and money risk (Swiggy's ToS almost certainly prohibits
   automated access to the consumer site; a flagged account is a real possible outcome of this adapter,
   unlike the mock and MCP adapters which never touch a real account at all).
@@ -211,10 +216,18 @@ human decides whether to place it in the still-open browser tab. Reasons:
 - because code never performs the risky action, the "was the order actually placed" ambiguity that
   `real_instamart.py` resolves with `get_orders()` never arises here.
 
-Every CSS selector lives in one file (`agent/browser_instamart_playwright.py`'s `Selectors` dataclass) and is
-an **unverified placeholder** -- there is no way to see Instamart's real markup without a browser, so this
-will not work until you inspect the live page yourself and fill them in. Expect it to break again on any
-Instamart frontend redeploy, with no changelog to warn you, unlike the MCP tool schemas.
+Most CSS selectors in `agent/browser_instamart_playwright.py`'s `Selectors` dataclass are now real, confirmed
+against the live site by hand (search, cart, variant modal, checkout footer, COD). A few are still unverified
+placeholders (card out-of-stock badge, cart subtotal fallback, delivery fee, UPI option, order history) --
+see the dataclass docstring for the current list. Expect real ones to break again on any Instamart frontend
+redeploy, with no changelog to warn you, unlike the MCP tool schemas.
+
+Add-to-cart is per-item resilient: `update_cart()` tries every item independently and returns a list of
+`AddOutcome` instead of aborting the whole batch on the first product that fails to add (seen live: some
+products take several seconds to actually persist after a confirmed click; others never stick at all, or
+throw outright, e.g. an unhandled variant-picker modal). A failed add is always reported, never silently
+treated as a success. `browser_pipeline_check.py` prints a summary of what got added, what had no in-stock
+match, and what failed with why.
 
 Tested with `FakeInstamartPage`, a fully in-memory double (`tests/test_browser_instamart.py`) -- no real
 browser or Playwright needed to run the test suite; Playwright is only required to actually run
