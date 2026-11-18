@@ -343,16 +343,17 @@ class PlaywrightInstamartPage:
         except Exception as e:
             if self.debug:
                 print(f"    [debug] add_item({product_id!r}): stepper never appeared ({e})")
-            self._capture_add_failure_diagnostics(card, product_id)
+            self._capture_add_failure_diagnostics(product_id)
         for _ in range(qty - 1):
             card.query_selector(self.sel.card_add_button).click()
 
-    def _capture_add_failure_diagnostics(self, card, product_id: str) -> None:
+    def _capture_add_failure_diagnostics(self, product_id: str) -> None:
         """Two live runs both hit this exact timeout on the 3rd item added, after two prior adds
-        succeeded -- reproducible by cart position/state, not a bad product. Rather than keep
-        guessing (stale toast/drawer intercepting the click? button needing scroll-into-view that
-        worked on an empty cart but not a non-empty one?), capture what was actually on screen at
-        the moment of the timeout: the clicked card's own outerHTML and a full-page screenshot.
+        succeeded -- reproducible by cart position/state, not a bad product. First attempt at
+        this capture only dumped the clicked card's own outerHTML, which turned out useless: the
+        variant-picker modal that actually opens renders elsewhere in the DOM entirely, not
+        inside the card, so there was nothing to find in it. Dump the FULL page content instead,
+        so the modal's real container, rows, and each row's add-button testid are all in there.
         Best-effort -- a failure here must never mask the real timeout that triggered it."""
         try:
             out_dir = "./debug_captures"
@@ -361,9 +362,9 @@ class PlaywrightInstamartPage:
             safe_name = "".join(c if c.isalnum() else "_" for c in product_id)[:60]
             base = f"{out_dir}/add_timeout_{safe_name}_{stamp}"
             with open(f"{base}.html", "w") as f:
-                f.write(card.evaluate("el => el.outerHTML"))
+                f.write(self.page.content())
             self.page.screenshot(path=f"{base}.png", full_page=True)
-            print(f"    [debug] timeout diagnostics saved: {base}.html / {base}.png")
+            print(f"    [debug] timeout diagnostics saved: {base}.html (full page) / {base}.png")
         except Exception as capture_error:
             print(f"    [debug] failed to capture timeout diagnostics: {capture_error}")
 
