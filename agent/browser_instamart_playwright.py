@@ -51,7 +51,7 @@ class Selectors:
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
       card_size, card_out_of_stock, cart_subtotal, cart_delivery_fee, payment_upi_option,
-      orders_page_url, order_row, order_id_in_row, variant_modal
+      orders_page_url, order_row, order_id_in_row
 
     cart_line_item ([role="listitem"]) is a real attribute but a loose one -- it may also match
     unrelated list items elsewhere on the page (e.g. a "did you forget?" carousel). We filter to
@@ -99,10 +99,10 @@ class Selectors:
     card_qty_count: str = '[data-testid="buttonpair-count"]'
 
     # Pack-size variant picker: appears instead of adding immediately, for some products.
-    # variant_modal is still an unverified heuristic (ARIA dialog role); the two add/confirm
-    # selectors below are real. variant_modal_add_button's testid repeats once per option row in
-    # the modal, so it's always scoped to a single matched row -- see _handle_variant_modal_if_present.
-    variant_modal: str = "[role='dialog']"
+    # Both real. Detection (is the modal even open?) checks for variant_modal_add_button directly
+    # rather than a separate modal-container selector -- see _handle_variant_modal_if_present.
+    # Its testid repeats once per option row in the modal, so it's always scoped to a single
+    # matched row, never just the first one on the page.
     variant_modal_add_button: str = '[data-testid="add_buttons_center"]'
     variant_modal_confirm_button: str = '[data-testid="InstamartItemCustomizationWidget-cta"]'
 
@@ -372,23 +372,37 @@ class PlaywrightInstamartPage:
         offering several variant rows to choose from. variant_modal_add_button's testid repeats
         once per row, so we can't just click the first match on the page -- we match rows by the
         target product's size/price (read off the search card that was clicked) and only click
-        within that one row's scope. If nothing matches, raise rather than guess."""
-        modal = self.page.query_selector(self.sel.variant_modal)
-        if modal is None:
-            return
-        if not self.sel.variant_modal_add_button or not self.sel.variant_modal_confirm_button:
+        within that one row's scope. If nothing matches, raise rather than guess.
+
+        Detection used to check a separate `variant_modal` selector ([role="dialog"], an
+        unverified guess) before even looking for the real add buttons -- a live run showed this
+        silently no-op on a product whose modal had multiple rows (1 ltr ₹300 4-pack vs. 1 ltr
+        ₹75 single, the one actually wanted) because that guess didn't match the real markup, so
+        add_item() went on to wait for a stepper that could never appear with the modal still
+        open. Detect by the real add-button testid itself instead -- it shouldn't exist on the
+        page unless this modal is actually open."""
+        row_buttons = self.page.query_selector_all(self.sel.variant_modal_add_button)
+        if not row_buttons:
+            return  # no modal opened -- card_add_button added straight to cart
+        if not self.sel.variant_modal_confirm_button:
             raise VariantModalRequiresSelectors(
                 "A variant-picker modal opened after clicking add-to-cart, but "
-                "Selectors.variant_modal_add_button / variant_modal_confirm_button aren't filled "
-                "in yet. Inspect the modal in DevTools and set those two fields -- not guessing "
-                "at them here on purpose."
+                "Selectors.variant_modal_confirm_button isn't filled in yet. Inspect the modal in "
+                "DevTools and set it -- not guessing at it here on purpose."
             )
+        confirm = self.page.query_selector(self.sel.variant_modal_confirm_button)
+        if confirm is None:
+            raise VariantModalRequiresSelectors(
+                f"A variant-picker modal opened with {len(row_buttons)} option row(s), but no "
+                "confirm button matched variant_modal_confirm_button. Not guessing -- check the "
+                "selector against the real modal markup."
+            )
+
         container = self._card_container(card)
         target_size_el = container.query_selector(self.sel.card_size)
         target_size = (target_size_el.text_content() if target_size_el else "").strip()
         target_price = self._card_price(container)
 
-        row_buttons = modal.query_selector_all(self.sel.variant_modal_add_button)
         matched = None
         for button in row_buttons:
             row_text = self._ancestor_text(button)
@@ -408,7 +422,7 @@ class PlaywrightInstamartPage:
                 "_ancestor_text to pick it up."
             )
         matched.click()
-        modal.query_selector(self.sel.variant_modal_confirm_button).click()
+        confirm.click()
 
     def _ancestor_text(self, element, levels: int = 6) -> str:
         """Text content of an element's nearest ancestor, climbing up to `levels` parents. Used to
