@@ -48,7 +48,11 @@ class Settings:
     # Real Instamart adapter (agent/real_instamart.py). Mock is always the default; "real" needs an
     # explicit opt-in and a stored OAuth token (agent/oauth.py), and nothing should run against the
     # real API before Builders Club access is approved.
-    instamart_backend: str = "mock"           # "mock" or "real"
+    # "browser" (agent/browser_instamart.py) drives the real logged-in Instamart site with
+    # Playwright -- live-tested end to end (search, cart, variant modals, COD selection) as of
+    # the commits around 2026-11-18. The final "place order" click is NOT implemented (no
+    # selector yet, never gone that far live) -- see BrowserInstamart's auto_place_order flag.
+    instamart_backend: str = "mock"           # "mock", "real", or "browser"
     instamart_cod_payment_value: str = "COD"  # the literal paymentMethod string sent to checkout;
                                                # Swiggy's own docs disagree on "COD" vs "Cash" -- verify
                                                # on the first real run (see DRYRUN.md) and adjust here

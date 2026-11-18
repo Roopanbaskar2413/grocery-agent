@@ -16,7 +16,7 @@ messenger**. No network, no keys, no dependencies beyond pytest.
 | File | Job |
 |---|---|
 | `agent/decide.py` | When to start a run: 4+ in-stock items, 6 PM with 2+, or Order now |
-| `agent/matcher.py` | Rule-based product matching. Out of stock and no match are different |
+| `agent/matcher.py` | Product matching: preferred-product memory first, then LLM disambiguation (falls back to the original rule-based fuzzy match on any LLM failure/unavailability) |
 | `agent/orchestrator.py` | Run lifecycle, self and permission modes, timers, checkout, list cleanup |
 | `agent/llm_gate.py` | The only door for Gemini and chat: allowlisted actions with hard limits |
 | `agent/mock_instamart.py` | Same tool names as the Swiggy MCP, with settable price, stock and COD |
@@ -192,12 +192,25 @@ run against the real API -- Builders Club access is pending, and `Settings.insta
   stored token.
 - See DRYRUN.md's "First real run against Instamart" section for exactly what to verify once access arrives.
 
-## Browser adapter (agent/browser_instamart.py, agent/browser_instamart_playwright.py) -- manual verification only
+## Browser adapter (agent/browser_instamart.py, agent/browser_instamart_playwright.py)
 A third Instamart implementation, driving the real logged-in Instamart website with Playwright instead of
 calling an API. It exists to verify the pipeline (search -> cart -> price/stock re-check) against the real
 site right now, without waiting on Builders Club access. Same interface as the other two adapters, so
-`agent/orchestrator.py` does not change -- but **this is not wired into `run_dev.py` or `Settings.instamart_backend`**,
-it is a tool you run yourself with `browser_pipeline_check.py`, not a third production backend choice.
+`agent/orchestrator.py` does not change.
+
+**Now wired in as a production backend**: `Settings.instamart_backend = "browser"` (or `INSTAMART_BACKEND=browser`
+for `run_dev.py`) makes the server own one long-lived Playwright browser context for its lifetime (not a
+per-request one), reusing `./.instamart_browser_profile` so the login persists -- same profile
+`browser_pipeline_check.py` uses. Relevant env vars: `INSTAMART_BROWSER_PROFILE`, `INSTAMART_BROWSER_HEADLESS`,
+`INSTAMART_BROWSER_DEBUG`, `INSTAMART_ALLOW_REAL_ORDERS`. Playwright is only imported when this backend is
+actually selected, so the default `mock` backend never needs it installed.
+
+`checkout()` only ever actually places a real order when `BrowserInstamart(..., allow_real_orders=True)` --
+`browser_pipeline_check.py` never sets this, so it keeps pausing with `InstamartCheckoutPaused` exactly as
+before, unchanged. Even with it on, **there is still no selector anywhere in this codebase for the final
+"Place/Confirm Order" button** on the COD flow -- that was never gone through live. `checkout()` raises
+`InstamartPlaceOrderNotImplemented` right at that point instead of guessing a selector that was never
+confirmed. Needs its own live DevTools inspection round before it can be implemented for real.
 
 Deliberate, permanent safety choice, not a gap to fill in later: `checkout()` here never clicks the final
 "place order" button. It re-reads price and stock (retrying until two consecutive reads agree, to ride out
@@ -235,6 +248,7 @@ browser or Playwright needed to run the test suite; Playwright is only required 
 
 ## Not built yet (next milestones)
 exercising the real Instamart adapter against the live API (needs Builders Club access, requested separately),
-UPI payment polling (the MCP tools exist -- `check_payment_status`, `confirm_order` -- but the orchestrator's
-state machine only drives the COD path today), and a mobile app (on hold for now; see the chat section above
-for the four endpoints a native app would reuse).
+the browser adapter's final "Place/Confirm Order" click (no selector yet -- see the Browser adapter section
+above), UPI payment polling (the MCP tools exist -- `check_payment_status`, `confirm_order` -- but the
+orchestrator's state machine only drives the COD path today), and a mobile app (on hold for now; see the chat
+section above for the four endpoints a native app would reuse).

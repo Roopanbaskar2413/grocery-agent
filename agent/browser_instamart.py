@@ -65,6 +65,15 @@ class InstamartPageError(RuntimeError):
     not the deliberate stop before ordering."""
 
 
+class InstamartPlaceOrderNotImplemented(RuntimeError):
+    """Raised when allow_real_orders=True but checkout() reaches the point where it would need to
+    click a real final "Place/Confirm Order" button. There is no selector for that button
+    anywhere in this codebase -- the live testing that confirmed search, cart, variant modals,
+    and COD selection never went this far, on purpose (see the module docstring and
+    agent/browser_instamart_playwright.py). This needs its own DevTools inspection round before
+    it can be implemented for real; raising here instead of guessing a selector."""
+
+
 class AddOutcome:
     """One item's result from update_cart()'s add step. `ok=False` means the add never verified
     in the real cart -- never treat this as a success, even though the page itself may have shown
@@ -129,12 +138,17 @@ class InstamartPage(Protocol):
 # ---------------------------------------------------------------------- the adapter
 class BrowserInstamart:
     def __init__(self, page: InstamartPage, pace_seconds=(0.8, 2.2), sleep=time.sleep,
-                 random_fn=random.uniform):
+                 random_fn=random.uniform, allow_real_orders: bool = False):
         self.page = page
         self.pace_seconds = pace_seconds
         self._sleep = sleep
         self._random = random_fn
         self.calls = []        # action names, for tests (mirrors MockInstamart.calls)
+        # Default False everywhere, including browser_pipeline_check.py, which never sets this --
+        # checkout() always pauses there, exactly as before. Only production wiring (run_dev.py,
+        # when instamart_backend == "browser") may set this True, and even then checkout() raises
+        # InstamartPlaceOrderNotImplemented rather than guessing a final "place order" selector.
+        self.allow_real_orders = allow_real_orders
 
     def _pace(self, action: str):
         """A small, randomised delay before every page-touching action, so a sequence of calls
@@ -225,16 +239,20 @@ class BrowserInstamart:
         return self.page.payment_options()
 
     def checkout(self, payment: str) -> str:
-        """Always raises InstamartCheckoutPaused. See the module docstring for why. Still does the
-        real safety work first: a fresh, stability-checked price/stock read, the minimum-order
-        guard, and -- now that the real checkout flow is confirmed -- navigates as far as
-        selecting "Pay on Delivery" on the real /payment page, so what you're told to review is
-        the actual confirmed-COD state, not just a re-checked cart total.
+        """By default (allow_real_orders=False -- always the case for browser_pipeline_check.py,
+        which never sets it), always raises InstamartCheckoutPaused after selecting COD. See the
+        module docstring for why. Still does the real safety work first: a fresh,
+        stability-checked price/stock read, the minimum-order guard, confirms a delivery address
+        is already selected, clicks through to /payment, and selects "Pay on Delivery" -- so what
+        you're told to review is the actual confirmed-COD state, not just a re-checked cart total.
 
         By design this agent only ever uses COD: never cards, wallets, or netbanking. There is no
-        selector anywhere in this codebase for picking a saved delivery address or for a final
-        "Place Order" confirm button on the COD flow -- both are deliberately never looked for, so
-        there is nothing past cod_payment_option this method could even try to click."""
+        selector anywhere in this codebase for picking a saved delivery address (checkout stops
+        and asks you to pick one by hand if none is already selected) or for a final "Place
+        Order" confirm button on the COD flow. If allow_real_orders is True (production wiring
+        only), checkout() reaches the point of needing that final click and raises
+        InstamartPlaceOrderNotImplemented instead of guessing a selector that was never confirmed
+        live -- see that exception's docstring."""
         if payment != "COD":
             raise ValueError("only COD (pay on delivery) is supported by design")
         self._pace("checkout")
@@ -249,7 +267,13 @@ class BrowserInstamart:
             )
         self.page.go_to_payment()
         self.page.select_cod()
-        raise InstamartCheckoutPaused(cart, payment)
+        if not self.allow_real_orders:
+            raise InstamartCheckoutPaused(cart, payment)
+        raise InstamartPlaceOrderNotImplemented(
+            f"allow_real_orders=True and COD is selected (cart total ₹{cart.total}), but there is "
+            "no selector yet for the final Place/Confirm Order button -- this was never gone "
+            "through live. Needs a DevTools inspection round before it can be implemented."
+        )
 
     def _stable_cart(self) -> CartView:
         """Re-reads the cart, with a short gap, until two consecutive reads agree on the total --

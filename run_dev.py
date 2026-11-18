@@ -11,6 +11,7 @@ The real WhatsApp sender, the real Gemini parser and the real Instamart adapter 
 import os
 
 from agent.api import ApiSecrets, create_app
+from agent.browser_instamart import BrowserInstamart
 from agent.clock import now_local
 from agent.config import Settings
 from agent.db import Database
@@ -54,10 +55,30 @@ clock = lambda: now_local(cfg.timezone)
 # Real Instamart: explicit opt-in (INSTAMART_BACKEND=real) and a stored OAuth token, or this refuses
 # to start. Nothing here has run against the real API yet -- see DRYRUN.md.
 oauth = None
+browser_context = None  # kept open for the server's lifetime when instamart_backend == "browser"
 if cfg.instamart_backend == "real":
     oauth = OAuthClient(TokenStore(os.environ.get("SWIGGY_TOKEN_PATH", ".swiggy_token")),
                         os.environ.get("SWIGGY_OAUTH_REDIRECT_URI", "http://localhost/auth/callback"))
     store = RealInstamart(oauth, cfg)
+elif cfg.instamart_backend == "browser":
+    # Live-tested end to end (search, cart, variant modals, COD selection) -- see
+    # browser_pipeline_check.py and the commits around 2026-11-18. The final "place order" click
+    # is NOT implemented (no selector yet); checkout() raises InstamartPlaceOrderNotImplemented
+    # if INSTAMART_ALLOW_REAL_ORDERS is set, rather than guessing one. Playwright is only imported
+    # here, lazily, so the mock/real backends never need it installed.
+    from playwright.sync_api import sync_playwright
+
+    from agent.browser_instamart_playwright import PlaywrightInstamartPage, Selectors
+
+    _playwright = sync_playwright().start()      # not a `with` block -- must outlive this script
+    browser_context = _playwright.chromium.launch_persistent_context(
+        os.environ.get("INSTAMART_BROWSER_PROFILE", "./.instamart_browser_profile"),
+        headless=os.environ.get("INSTAMART_BROWSER_HEADLESS", "false").lower() == "true")
+    browser_page = browser_context.new_page()
+    store = BrowserInstamart(
+        PlaywrightInstamartPage(browser_page, Selectors(),
+                               debug=os.environ.get("INSTAMART_BROWSER_DEBUG", "false").lower() == "true"),
+        allow_real_orders=os.environ.get("INSTAMART_ALLOW_REAL_ORDERS", "false").lower() == "true")
 else:
     store = MockInstamart()
 

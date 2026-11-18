@@ -4,7 +4,7 @@ import pytest
 
 from agent.browser_instamart import (ADD_ITEM_VERIFY_ATTEMPTS, AddOutcome, BrowserInstamart,
                                      InstamartCheckoutPaused, InstamartMinOrderError, InstamartPageError,
-                                     PRICE_RECHECK_MAX_ATTEMPTS)
+                                     InstamartPlaceOrderNotImplemented, PRICE_RECHECK_MAX_ATTEMPTS)
 
 
 class FakeInstamartPage:
@@ -247,6 +247,20 @@ def test_checkout_navigates_to_payment_and_selects_cod_before_pausing(store, pag
     assert ("select_cod",) in page.calls
     # go_to_payment must happen before select_cod, not the other way round
     assert page.calls.index(("go_to_payment",)) < page.calls.index(("select_cod",))
+
+
+def test_checkout_raises_not_implemented_instead_of_pausing_when_real_orders_are_allowed(page):
+    """allow_real_orders=True is production-only wiring (browser_pipeline_check.py never sets
+    it) -- but there is still no selector anywhere for the final "Place Order" button, so even
+    with it on, checkout() must still stop, just with a different, explicit exception instead of
+    guessing at a click that was never confirmed live."""
+    store = BrowserInstamart(page, pace_seconds=(0, 0), sleep=lambda s: None, allow_real_orders=True)
+    page._cart = {"p1": 5}
+    with pytest.raises(InstamartPlaceOrderNotImplemented):
+        store.checkout("COD")
+    # still did all the real work up to and including selecting COD
+    assert ("go_to_payment",) in page.calls
+    assert ("select_cod",) in page.calls
 
 
 def test_checkout_stops_and_raises_if_no_address_is_selected(store, page):
