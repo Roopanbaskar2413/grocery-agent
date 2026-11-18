@@ -390,9 +390,21 @@ class PlaywrightInstamartPage:
         Earlier attempts detected via a role="dialog" guess (wrong markup, silently never
         triggered) and then via add_buttons_center alone (right data, wrong question) before this
         real container selector was confirmed from an actual capture."""
+        # query_selector() is instantaneous -- it does not wait. Calling it immediately after
+        # the "+" click races the modal's render: if it hasn't mounted yet, this returns None,
+        # _handle_variant_modal_if_present wrongly concludes "no modal, added directly", and
+        # add_item then waits 15s for a stepper that was never going to appear -- the real modal
+        # renders a moment later and just sits there, fully unclicked, which is exactly what the
+        # post-timeout diagnostic captures kept showing (modal open, total "0", untouched ADD
+        # button) with none of this function's own debug prints ever firing. Give the modal a
+        # short real chance to render instead of checking once, instantly.
+        try:
+            self.page.wait_for_selector(self.sel.variant_modal, timeout=2000)
+        except Exception:
+            return  # no modal opened -- card_add_button added straight to cart
         modal = self.page.query_selector(self.sel.variant_modal)
         if modal is None:
-            return  # no modal opened -- card_add_button added straight to cart
+            return  # defensive -- shouldn't happen right after wait_for_selector succeeded
         if not self.sel.variant_row or not self.sel.variant_row_price or not self.sel.variant_modal_confirm_button:
             raise VariantModalRequiresSelectors(
                 "A variant-picker modal opened, but variant_row / variant_row_price / "
