@@ -27,6 +27,8 @@ import re
 import time
 from dataclasses import dataclass
 
+from .browser_instamart import InstamartPageError
+
 
 SEARCH_RESULT_POLL_MS = 30000  # how long to keep polling for the real result grid to settle
 
@@ -48,8 +50,8 @@ class Selectors:
       card_add_button, cart_line_qty_plus, cart_line_qty_minus, cart_url,
       variant_modal, variant_row, variant_row_price, variant_row_sold_out,
       variant_modal_add_button, variant_modal_confirm_button, variant_modal_total_cost,
-      cart_footer_cta, cart_footer_make_payment_button, cod_payment_option, address_row,
-      address_row_annotation
+      cart_footer_cta, cart_footer_make_payment_button, cod_payment_option, cod_payment_tick,
+      address_row, address_row_annotation
 
     Still unverified placeholders -- fill these in against the real page/cart markup:
       card_size, card_out_of_stock, cart_subtotal, cart_delivery_fee, payment_upi_option,
@@ -133,7 +135,14 @@ class Selectors:
     address_row: str = '[data-testid="address-item-container"]'
     address_row_annotation: str = '[data-testid="address-item-annotation"]'
     # "Pay on Delivery" on the /payment page -- the only payment option this agent ever selects.
-    cod_payment_option: str = '[data-testid="pg_mo_cod_header"]'
+    # Confirmed via live DevTools: the clickable element is the role="button" div matched by its
+    # aria-label text, NOT the pm_cod_name container around it -- that container isn't itself
+    # clickable. Matched by aria-label text rather than its styled-components class (e.g.
+    # "sc-eWHaVC eAbmsE"), which is generated and won't survive a rebuild.
+    cod_payment_option: str = 'div[role="button"][aria-label="Cash Pay cash at the time of delivery."]'
+    # Selected-state indicator: aria-checked flips from "false" to "true" once COD is actually
+    # selected -- see select_cod(), which waits for this rather than trusting the click alone.
+    cod_payment_tick: str = '[data-testid="pm_cod_tick"]'
 
     payment_upi_option: str = "[data-testid='payment-upi']"
 
@@ -581,7 +590,30 @@ class PlaywrightInstamartPage:
         self.page.wait_for_load_state("networkidle", timeout=self.nav_timeout_ms)
 
     def select_cod(self) -> None:
-        self.page.query_selector(self.sel.cod_payment_option).click()
+        """Clicks the real clickable COD row (cod_payment_option), then waits -- via
+        wait_for_function, not an instant check -- for the selected-state indicator
+        (cod_payment_tick) to actually report aria-checked="true" before returning. Same
+        render-delay race class as the variant-modal confirm and address-selection fixes earlier:
+        a click landing doesn't mean the UI has caught up to it yet. Raises InstamartPageError if
+        it never flips within the timeout -- checkout() must never proceed believing COD is
+        selected when it isn't."""
+        row = self.page.query_selector(self.sel.cod_payment_option)
+        if row is None:
+            raise InstamartPageError(
+                "COD row (cod_payment_option) not found on the payment page -- can't select it")
+        row.click()
+        try:
+            self.page.wait_for_function(
+                """(sel) => {
+                    const el = document.querySelector(sel);
+                    return el && el.getAttribute('aria-checked') === 'true';
+                }""",
+                arg=self.sel.cod_payment_tick,
+                timeout=5000,
+            )
+        except Exception as e:
+            raise InstamartPageError(
+                f"clicked COD, but cod_payment_tick never reported aria-checked=\"true\": {e}")
 
     def orders(self) -> list[dict]:
         self.page.goto(self.sel.orders_page_url)
