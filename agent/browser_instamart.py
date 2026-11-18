@@ -40,6 +40,7 @@ MIN_ORDER_RUPEES = 99                # Instamart's own minimum, same as real_ins
 PRICE_RECHECK_MAX_ATTEMPTS = 4       # give up and raise if the cart never settles this many reads
 PRICE_RECHECK_GAP_SECONDS = 1.5
 ADD_ITEM_VERIFY_ATTEMPTS = 3         # give up and raise if an add never shows up in the real cart
+ADD_ITEM_VERIFY_GAP_SECONDS = 5      # a confirmed add was seen taking up to 15s to actually persist
 
 
 class InstamartMinOrderError(RuntimeError):
@@ -146,11 +147,14 @@ class BrowserInstamart:
     def _add_and_verify(self, pid, qty):
         """The page's own on-screen stepper confirming an add is only a client-side signal -- a
         live run with several items added back to back showed one whose stepper DID appear
-        afterwards missing from the cart anyway, while two others timed out outright. Re-read the
-        real cart after each add and retry rather than trusting the page alone; raise clearly if
-        it never sticks instead of silently moving on and losing the item."""
+        afterwards missing from the cart anyway, while two others timed out outright. Turned out
+        to be plain backend latency, not a real failure or bot-detection: an isolated one-item
+        test (add once, wait 15s, check once) found the item there all along. Give the server a
+        moment (ADD_ITEM_VERIFY_GAP_SECONDS) before each check instead of reading the cart back
+        immediately; raise clearly if it genuinely never sticks instead of silently moving on."""
         for _ in range(ADD_ITEM_VERIFY_ATTEMPTS):
             self.page.add_item(pid, qty)
+            self._sleep(ADD_ITEM_VERIFY_GAP_SECONDS)
             current = {it["id"]: it["qty"] for it in self.page.cart_items()}
             if current.get(pid) == qty:
                 return
