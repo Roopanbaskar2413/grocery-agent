@@ -2,8 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from agent.browser_instamart import (ADD_ITEM_VERIFY_ATTEMPTS, BrowserInstamart, InstamartCheckoutPaused,
-                                     InstamartMinOrderError, InstamartPageError, PRICE_RECHECK_MAX_ATTEMPTS)
+from agent.browser_instamart import (ADD_ITEM_VERIFY_ATTEMPTS, AddOutcome, BrowserInstamart,
+                                     InstamartCheckoutPaused, InstamartMinOrderError, InstamartPageError,
+                                     PRICE_RECHECK_MAX_ATTEMPTS)
 
 
 class FakeInstamartPage:
@@ -18,6 +19,7 @@ class FakeInstamartPage:
         self._totals_calls = 0
         self.calls = []
         self.add_item_noop_count = 0  # next N add_item calls look like they happened but don't stick
+        self.add_item_fail_pids = set()  # these pids never stick, no matter how many attempts
 
     def search(self, query):
         self.calls.append(("search", query))
@@ -39,6 +41,8 @@ class FakeInstamartPage:
 
     def add_item(self, product_id, qty):
         self.calls.append(("add_item", product_id, qty))
+        if product_id in self.add_item_fail_pids:
+            return  # looks like it happened (no error) but never touches self._cart
         if self.add_item_noop_count > 0:
             self.add_item_noop_count -= 1
             return  # looks like it happened (no error) but never touches self._cart
@@ -137,17 +141,35 @@ def test_update_cart_leaves_an_already_correct_line_untouched(store, page):
 # missing from the cart afterward anyway)
 def test_update_cart_retries_an_add_that_didnt_stick_until_it_verifies(store, page):
     page.add_item_noop_count = 2  # first two add_item calls for p1 are no-ops
-    store.update_cart([("p1", 1)])
+    results = store.update_cart([("p1", 1)])
     assert [c for c in page.calls if c[0] == "add_item"] == [("add_item", "p1", 1)] * 3
     assert page._cart == {"p1": 1}
+    assert results == [AddOutcome("p1", 1, True)]
 
 
-def test_update_cart_raises_if_an_add_never_verifies(store, page):
+def test_update_cart_reports_a_failed_add_instead_of_raising(store, page):
+    """A flaky product's add must not abort update_cart() -- see test_update_cart_continues_past_a_
+    failed_add_and_reports_it_in_the_summary for the batch case this is really guarding."""
     page.add_item_noop_count = 999  # never actually sticks
-    with pytest.raises(InstamartPageError):
-        store.update_cart([("p1", 1)])
+    results = store.update_cart([("p1", 1)])
     assert len([c for c in page.calls if c[0] == "add_item"]) == ADD_ITEM_VERIFY_ATTEMPTS
     assert page._cart == {}
+    assert len(results) == 1
+    assert results[0].pid == "p1" and results[0].ok is False and results[0].reason
+
+
+# ---------------------------------------------------------------- break this on purpose: one bad
+# product in a batch must not stop the rest from being added and verified
+def test_update_cart_continues_past_a_failed_add_and_reports_it_in_the_summary(store, page):
+    page.add_item_fail_pids = {"p1"}  # p1 never sticks; p2 and p3 should still go through fine
+    results = store.update_cart([("p1", 1), ("p2", 1), ("p3", 2)])
+
+    by_pid = {r.pid: r for r in results}
+    assert by_pid["p1"].ok is False and by_pid["p1"].reason
+    assert by_pid["p2"].ok is True
+    assert by_pid["p3"].ok is True
+    # the flaky p1 didn't stop p2/p3 from actually landing in the cart
+    assert page._cart == {"p2": 1, "p3": 2}
 
 
 # ---------------------------------------------------------------- payment options / orders passthrough

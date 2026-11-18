@@ -65,6 +65,26 @@ class InstamartPageError(RuntimeError):
     not the deliberate stop before ordering."""
 
 
+class AddOutcome:
+    """One item's result from update_cart()'s add step. `ok=False` means the add never verified
+    in the real cart -- never treat this as a success, even though the page itself may have shown
+    no error at all."""
+    def __init__(self, pid, qty, ok, reason=None):
+        self.pid = pid
+        self.qty = qty
+        self.ok = ok
+        self.reason = reason
+
+    def __repr__(self):
+        status = "ok" if self.ok else f"FAILED ({self.reason})"
+        return f"AddOutcome({self.pid!r}, qty={self.qty}, {status})"
+
+    def __eq__(self, other):
+        if not isinstance(other, AddOutcome):
+            return NotImplemented
+        return (self.pid, self.qty, self.ok) == (other.pid, other.qty, other.ok)
+
+
 # ---------------------------------------------------------------------- the page protocol
 class InstamartPage(Protocol):
     """What BrowserInstamart needs from "the page," whether that's a real browser tab
@@ -127,10 +147,18 @@ class BrowserInstamart:
         lines = [(it["id"], it["qty"]) for it in items]
         return CartView(lines, int(totals.get("subtotal", 0)), int(totals.get("delivery_fee", 0)))
 
-    def update_cart(self, lines):
+    def update_cart(self, lines) -> list[AddOutcome]:
         """Replaces the whole cart, like the other adapters -- but the UI has no single bulk-set
         action, so this reconciles: add what's missing, adjust quantities that differ, remove
-        anything not in the new list."""
+        anything not in the new list.
+
+        One flaky product's add must not abort the rest of the list -- a live run showed a
+        specific product's add click doing nothing visible at all within the timeout, which used
+        to raise and stop every item after it in the batch. Each add is now attempted and verified
+        independently; a failure is recorded, never silently treated as success, and the batch
+        keeps going. Returns the list of AddOutcome for every item update_cart tried to add (not
+        for removes/quantity-adjusts, which still happen inline and still raise on a real page
+        error -- only the "is this specific product even addable right now" case is batch-tolerant)."""
         self._pace("update_cart")
         wanted = {pid: qty for pid, qty in lines if qty > 0}
         current = {it["id"]: it["qty"] for it in self.page.cart_items()}
@@ -138,29 +166,37 @@ class BrowserInstamart:
         for pid in current:
             if pid not in wanted:
                 self.page.remove_item(pid)
+
+        results = []
         for pid, qty in wanted.items():
             if pid not in current:
-                self._add_and_verify(pid, qty)
+                results.append(self._add_and_verify(pid, qty))
             elif current[pid] != qty:
                 self.page.set_quantity(pid, qty)
+        return results
 
-    def _add_and_verify(self, pid, qty):
+    def _add_and_verify(self, pid, qty) -> AddOutcome:
         """The page's own on-screen stepper confirming an add is only a client-side signal -- a
         live run with several items added back to back showed one whose stepper DID appear
         afterwards missing from the cart anyway, while two others timed out outright. Turned out
-        to be plain backend latency, not a real failure or bot-detection: an isolated one-item
-        test (add once, wait 15s, check once) found the item there all along. Give the server a
-        moment (ADD_ITEM_VERIFY_GAP_SECONDS) before each check instead of reading the cart back
-        immediately; raise clearly if it genuinely never sticks instead of silently moving on."""
+        to be plain backend latency, not a real failure or bot-detection, for the ones that DO
+        eventually land: an isolated one-item test (add once, wait 15s, check once) found the
+        item there all along. Give the server a moment (ADD_ITEM_VERIFY_GAP_SECONDS) before each
+        check instead of reading the cart back immediately. But some products genuinely never
+        land at all (seen live: a product whose add click produced no visible change within the
+        timeout, every attempt) -- report that as a failed AddOutcome instead of raising, so one
+        bad product doesn't stop update_cart() from trying the rest of the list."""
         for _ in range(ADD_ITEM_VERIFY_ATTEMPTS):
             self.page.add_item(pid, qty)
             self._sleep(ADD_ITEM_VERIFY_GAP_SECONDS)
             current = {it["id"]: it["qty"] for it in self.page.cart_items()}
             if current.get(pid) == qty:
-                return
-        raise InstamartPageError(
-            f"could not confirm {pid!r} was added to the cart after {ADD_ITEM_VERIFY_ATTEMPTS} attempts"
+                return AddOutcome(pid, qty, True)
+        return AddOutcome(
+            pid, qty, False,
+            reason=f"could not confirm it was added to the cart after {ADD_ITEM_VERIFY_ATTEMPTS} attempts"
         )
+
 
     def get_payment_options(self):
         self._pace("get_payment_options")

@@ -34,7 +34,8 @@ def main(items):
         input(f"Browser open. Log in to Instamart by hand if this is the first run, "
              f"then press Enter to continue...")
 
-        lines = []
+        lines = []            # (item_query, pid, qty, chosen Product)
+        no_match = []         # item queries with no in-stock card at all
         for item in items:
             found = store.search_products(item)
             print(f"  {item}: {len(found)} card(s) found")
@@ -43,10 +44,11 @@ def main(items):
             matches = [p for p in found if p.in_stock]
             if not matches:
                 print(f"  {item}: no in-stock match found")
+                no_match.append(item)
                 continue
             chosen = matches[0]
             print(f"  {item}: matched {chosen.name} {chosen.size} (₹{chosen.price})")
-            lines.append((chosen.id, 1))
+            lines.append((item, chosen.id, 1, chosen))
 
         if not lines:
             print("Nothing matched, nothing added to the cart.")
@@ -54,7 +56,27 @@ def main(items):
             context.close()
             return
 
-        store.update_cart([(pid, qty) for pid, qty in lines])
+        # One flaky product must not stop the rest -- update_cart() now tries every item
+        # independently and reports a per-item result instead of raising on the first failure.
+        results = store.update_cart([(pid, qty) for _, pid, qty, _ in lines])
+        outcome_by_pid = {r.pid: r for r in results}
+
+        added, failed = [], []
+        for item, pid, qty, chosen in lines:
+            outcome = outcome_by_pid.get(pid)
+            if outcome is None or outcome.ok:
+                added.append((item, chosen))
+            else:
+                failed.append((item, chosen, outcome.reason))
+
+        print("\n--- Add-to-cart summary ---")
+        for item, chosen in added:
+            print(f"  ADDED: {item!r} -> {chosen.name} (₹{chosen.price})")
+        for item in no_match:
+            print(f"  NO MATCH: {item!r} -- nothing in stock found")
+        for item, chosen, reason in failed:
+            print(f"  FAILED TO ADD: {item!r} -> {chosen.name} -- {reason}")
+
         cart = store.get_cart()
         print(f"\nCart: {len(cart.lines)} line(s), subtotal ₹{cart.subtotal}, "
              f"delivery ₹{cart.delivery_fee}, total ₹{cart.total}")
