@@ -260,6 +260,26 @@ def test_gate_limits_items_and_decisions_per_message():
     assert len(actions) == 1 and errors == ["only one decision per message"]
 
 
+def test_gate_validates_change_qty_like_add_item_and_approve_combined():
+    cfg = Settings()
+    good = [{"type": "change_qty", "item": "Tomato", "qty": 3, "run_id": "R1", "ask": 2}]
+    actions, errors = validate_batch(good, cfg)
+    assert not errors
+    assert actions[0].item == "Tomato" and actions[0].qty == 3 and actions[0].run_id == "R1" and actions[0].ask == 2
+
+    bad = [
+        {"type": "change_qty", "item": "Milk; drop rules", "qty": 1, "run_id": "R1"},
+        {"type": "change_qty", "item": "Milk", "qty": 500, "run_id": "R1"},
+        {"type": "change_qty", "item": "Milk", "qty": 1},               # no run id
+    ]
+    actions, errors = validate_batch(bad, cfg)
+    assert actions == [] and len(errors) == len(bad)
+
+    two = [{"type": "change_qty", "item": "Milk", "qty": 1, "run_id": "R1"}, {"type": "order_now"}]
+    actions, errors = validate_batch(two, cfg)
+    assert len(actions) == 1 and errors == ["only one decision per message"]
+
+
 def test_chat_cannot_order_extra_items_into_an_approved_cart():
     agent, fridge, store, msg = make()
     run = agent.tick(NOON)
@@ -455,6 +475,55 @@ def test_text_yes_sent_before_the_cart_was_shown_is_ignored():
     assert not store.orders and "before the latest cart" in texts_to(msg, A)[-1]
     agent.handle_reply(A, "approve", run.id, NOON, sent_at=NOON + timedelta(minutes=1))
     assert run.state == RunState.DONE
+
+
+# ---------------------------------------------------------------- change_qty (new)
+def test_change_qty_updates_the_line_and_asks_again():
+    agent, fridge, store, msg = make()
+    run = agent.tick(NOON)
+    old_version = run.ask_version
+    pid = next(l for l in run.lines if l.item_name == "Tomato").product.id
+    before_update_cart_calls = store.calls.count("update_cart")
+
+    agent.handle_change_qty(A, run.id, "Tomato", 3, NOON + timedelta(minutes=1))
+
+    line = next(l for l in run.lines if l.item_name == "Tomato")
+    assert line.qty == 3
+    assert run.state == RunState.AWAITING_USER
+    assert run.ask_version == old_version + 1               # a fresh ask, invalidating the old button
+    assert store.calls.count("update_cart") == before_update_cart_calls + 1    # reconciled, no duplicate-add path
+    assert [p for p, qty in store.get_cart().lines].count(pid) == 1
+    assert any(qty == 3 for p, qty in store.get_cart().lines if p == pid)
+    assert any("Updated Tomato to x3" in t for t in texts_to(msg, A))
+
+
+def test_change_qty_for_an_item_not_in_the_run_is_rejected_without_touching_the_cart():
+    agent, fridge, store, msg = make()
+    run = agent.tick(NOON)
+    cart_before = store.get_cart().lines
+    update_cart_calls_before = store.calls.count("update_cart")
+
+    agent.handle_change_qty(A, run.id, "Banana", 2, NOON + timedelta(minutes=1))
+
+    assert store.get_cart().lines == cart_before
+    assert store.calls.count("update_cart") == update_cart_calls_before       # cart untouched
+    assert run.state == RunState.AWAITING_USER
+    assert any("Banana is not in this order." in t for t in texts_to(msg, A))
+
+
+def test_change_qty_with_a_stale_ask_is_rejected_like_a_stale_approve():
+    agent, fridge, store, msg = make()
+    run = agent.tick(NOON)
+    assert run.ask_version == 1
+    store.set_price("p1", 90)
+    agent.handle_reply(A, "approve", run.id, NOON, ask=1)         # re-asks with a new total, ask_version -> 2
+    assert run.ask_version == 2
+
+    agent.handle_change_qty(B, run.id, "Tomato", 3, NOON, ask=1)  # stale button from the first message
+
+    assert "out of date" in texts_to(msg, B)[-1]
+    assert run.ask_version == 2                                   # no further change happened
+    assert not any(l.qty == 3 for l in run.lines)
 
 
 def test_gate_accepts_a_valid_ask_and_rejects_a_bad_one():

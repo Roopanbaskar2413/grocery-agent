@@ -51,6 +51,17 @@ class RuleIntentParser:
         m = re.match(r"^add (?:(\d+) )?(.+)$", t)
         if m:
             return [{"type": "add_item", "item": m.group(2), "qty": int(m.group(1) or 1)}]
+        m = re.match(r"^change (.+) to (\d+)$", t)
+        if m and run:
+            return [{"type": "change_qty", "run_id": run["id"], "item": m.group(1), "qty": int(m.group(2))}]
+        m = re.match(r"^make it (\d+)(?: (.+))?$", t)
+        if m and run:
+            item = m.group(2)
+            if item is None:
+                if len(run.get("items", [])) != 1:
+                    return []                                  # ambiguous which item -- ask for the name
+                item = run["items"][0]["name"]
+            return [{"type": "change_qty", "run_id": run["id"], "item": item, "qty": int(m.group(1))}]
         m = re.match(r"^remind me when (.+?) (?:is|are) back(?: in stock)?$", t)
         if m:
             return [{"type": "watch_item", "item": m.group(1)}]

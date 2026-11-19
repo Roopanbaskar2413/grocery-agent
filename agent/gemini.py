@@ -27,7 +27,8 @@ from .intent import NO, ORDER_NOW, YES, ParseResult, RuleIntentParser, _clean
 log = logging.getLogger("agent.gemini")
 
 BASE = "https://generativelanguage.googleapis.com/v1beta"
-MODEL_ACTIONS = ["add_item", "remove_item", "watch_item", "cancel", "approve", "order_now", "change_mode", "none"]
+MODEL_ACTIONS = ["add_item", "remove_item", "watch_item", "cancel", "approve", "order_now", "change_mode",
+                  "change_qty", "none"]
 MAX_ACTIONS = 5
 MAX_REPLY = 300
 MAX_QUESTIONS = 2
@@ -40,6 +41,9 @@ SYSTEM = """You are the chat helper for a household grocery ordering agent. Repl
 - Ask one short clarifying question only if the item is truly ambiguous and "questions_asked" is below 2. Otherwise
   add the item with defaults. When you ask a question, give no actions.
 - watch_item is for "remind me when X is back". remove_item removes an item from the list.
+- change_qty changes the quantity of an item already in an open cart awaiting approval (item, qty: the new
+  total quantity). Use it when the user wants to change how much of something already in that cart they get,
+  as distinct from add_item, which is for adding something new to the list.
 - Use cancel, approve or order_now only if the user clearly asks for exactly that. change_mode only if asked.
 - If the message is unclear or off topic, give no actions and a short reply of 200 characters or less."""
 
@@ -205,6 +209,12 @@ class GeminiIntentParser:
                 if not run:
                     continue                                   # nothing to approve or cancel
                 raw["run_id"] = run["id"]
+            elif t == "change_qty":
+                if not run:
+                    continue                                   # nothing open to change the quantity of
+                raw["run_id"] = run["id"]
+                raw["item"] = a.get("item")
+                raw["qty"] = a.get("qty", 1)
             elif t == "change_mode":
                 raw["mode"] = a.get("mode")
             actions.append(raw)

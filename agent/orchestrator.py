@@ -364,6 +364,43 @@ class Agent:
         self._send(f"{run.id} was already handled by {who}.", to=sender, reply=True)
         return None
 
+    @persisted
+    def handle_change_qty(self, sender, run_id, item, qty, now, ask=None, sent_at=None):
+        """Change the quantity of an item already in an AWAITING_USER cart. Reached only through
+        handle_chat, so the gate has already run. Reconciles through store.update_cart, the same
+        path _start_run/_checkout use, so an item already in the real cart gets its stepper clicked
+        rather than being re-added as a duplicate line. Re-asks afterward so the new total gets a
+        fresh approval (this also bumps ask_version, invalidating the old "Place order" button)."""
+        self.now = now
+        if sender not in self.cfg.recipients:
+            return None
+        run = next((r for r in self.runs if r.id == run_id), None)
+        if run is None or not run.state.is_open and run.handled_by is None:
+            self._send("That order is no longer open. Press Order now to start a new one.", to=sender, reply=True)
+            return None
+        if ask is not None and ask != run.ask_version:
+            self._send("That button is out of date. Use the latest message.", to=sender, reply=True)
+            return None
+        skew = timedelta(seconds=self.cfg.reply_skew_seconds)
+        if ask is None and sent_at is not None and run.state_since and sent_at < run.state_since - skew:
+            self._send("That reply was sent before the latest cart, so I ignored it.", to=sender, reply=True)
+            return None
+        if run.state != RunState.AWAITING_USER:
+            who = self._name(run.handled_by) if run.handled_by else "someone"
+            self._send(f"{run.id} was already handled by {who}.", to=sender, reply=True)
+            return None
+
+        line = next((l for l in run.lines if l.item_name.lower() == item.lower()), None)
+        if line is None:
+            self._send(f"{item} is not in this order.", to=sender, reply=True)
+            return None
+
+        line.qty = qty
+        self.store.update_cart([(l.product.id, l.qty) for l in run.lines])
+        run.approved_total = self.store.get_cart().total
+        self._ask(run, f"Updated {item} to x{qty}.")
+        return run
+
     def _refresh_run(self, run_id):
         fresh = self.db.get_run(run_id)
         current = next(r for r in self.runs if r.id == run_id)
@@ -417,6 +454,8 @@ class Agent:
                                f"and stop after {self.cfg.watch_expiry_days} days.", to=sender, reply=True)
             elif a.type in ("approve", "cancel"):
                 self.handle_reply(sender, a.type, a.run_id, now, ask=a.ask, sent_at=sent_at)
+            elif a.type == "change_qty":
+                self.handle_change_qty(sender, a.run_id, a.item, a.qty, now, ask=a.ask, sent_at=sent_at)
             elif a.type == "order_now":
                 self.tick(now, order_now=True)
             elif a.type == "change_mode":

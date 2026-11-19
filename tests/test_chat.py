@@ -220,6 +220,18 @@ def test_text_yes_orders_but_loose_agreement_does_not(rig):
     assert len(rig.store.orders) == 1
 
 
+def test_change_qty_in_chat_updates_the_cart_and_asks_again(rig):
+    rig.fridge_push()
+    rig.clock.t = NOON + timedelta(minutes=1)
+    rig.send(T1, "change tomato to 3")
+    line = next(l for l in rig.run.lines if l.item_name == "Tomato")
+    assert line.qty == 3
+    assert rig.run.state == RunState.AWAITING_USER
+    assert rig.run.ask_version == 2
+    assert any("Updated tomato to x3" in t for t in rig.texts(T1))
+    assert not rig.store.orders
+
+
 def test_cancel_button_keeps_the_items_on_the_list(rig):
     rig.fridge_push()
     rig.clock.t = NOON + timedelta(minutes=1)

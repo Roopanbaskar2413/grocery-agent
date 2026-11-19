@@ -11,10 +11,11 @@ from typing import Optional
 
 from .config import Settings
 
-ALLOWED = {"add_item", "remove_item", "watch_item", "approve", "cancel", "change_mode", "order_now", "none"}
+ALLOWED = {"add_item", "remove_item", "watch_item", "approve", "cancel", "change_mode", "order_now",
+           "change_qty", "none"}
 KEYS = {"type", "item", "qty", "run_id", "mode", "ask"}
 ITEM_RE = re.compile(r"^[A-Za-z][A-Za-z '\-]{1,39}$")
-ONE_PER_MESSAGE = {"approve", "cancel", "order_now", "change_mode"}
+ONE_PER_MESSAGE = {"approve", "cancel", "order_now", "change_mode", "change_qty"}
 
 
 @dataclass
@@ -36,17 +37,17 @@ def validate_one(raw, cfg: Settings):
     if t not in ALLOWED:
         return None, "action not allowed"
     a = Action(type=t)
-    if t in ("add_item", "remove_item", "watch_item"):
+    if t in ("add_item", "remove_item", "watch_item", "change_qty"):
         item = raw.get("item")
         if not isinstance(item, str) or not ITEM_RE.match(item.strip()):
             return None, "invalid item name"
         a.item = item.strip()
-    if t == "add_item":
+    if t in ("add_item", "change_qty"):
         qty = raw.get("qty", 1)
         if not isinstance(qty, int) or isinstance(qty, bool) or not (1 <= qty <= cfg.max_qty_per_item):
             return None, f"quantity must be 1 to {cfg.max_qty_per_item}"
         a.qty = qty
-    if t in ("approve", "cancel"):
+    if t in ("approve", "cancel", "change_qty"):
         if not isinstance(raw.get("run_id"), str):
             return None, "missing run"
         a.run_id = raw["run_id"]
